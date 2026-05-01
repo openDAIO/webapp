@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, CircleDollarSign, Loader2, LockKeyhole, Upload, Wallet } from 'lucide-react';
 import PixelFrame, { PixelFrameChrome } from './PixelFrame';
+import { useWallet } from '../services/wallet/useWallet';
 
 export interface ConfirmedReviewBounty {
   amount: number;
@@ -10,13 +11,6 @@ export interface ConfirmedReviewBounty {
 }
 
 interface ReviewBountyGateOverlayProps {
-  walletAddress: string;
-  walletBalance: number;
-  walletBalanceSymbol?: string;
-  isWalletConnected?: boolean;
-  isWalletReady?: boolean;
-  isWalletConnecting?: boolean;
-  onConnectWallet?: () => void;
   reviewBounty: ConfirmedReviewBounty | null;
   onConfirmed: (reviewBounty: ConfirmedReviewBounty) => void;
   onSubmitPaper: (title: string, link: string) => void;
@@ -38,18 +32,19 @@ function buildMockTxHash() {
 }
 
 export default function ReviewBountyGateOverlay({
-  walletAddress,
-  walletBalance,
-  walletBalanceSymbol = 'POL',
-  isWalletConnected = true,
-  isWalletReady = true,
-  isWalletConnecting = false,
-  onConnectWallet,
   reviewBounty,
   onConfirmed,
   onSubmitPaper,
   onBack,
 }: ReviewBountyGateOverlayProps) {
+  const wallet = useWallet();
+  const isWalletConnected = wallet.isConnected;
+  const isWalletReady = wallet.isReady;
+  const isWalletConnecting = wallet.isConnecting;
+  const walletAddress = wallet.shortAddress ?? '';
+  const walletBalance = wallet.balance;
+  const walletBalanceSymbol = wallet.balanceSymbol;
+
   const [amountInput, setAmountInput] = useState('50');
   const [paymentStep, setPaymentStep] = useState<PaymentStep>('idle');
   const [txHash, setTxHash] = useState('');
@@ -327,19 +322,31 @@ export default function ReviewBountyGateOverlay({
               {isWalletConnected ? 'Connected Wallet' : 'Wallet Not Connected'}
             </div>
             {isWalletConnected ? (
-              <>
-                <div className="truncate text-xs text-[#6b563f]">{walletAddress}</div>
-                <div className="mt-2 text-lg font-bold">
-                  {walletBalance.toFixed(2)} {walletBalanceSymbol}
+              <button
+                type="button"
+                onClick={wallet.openAccount}
+                className="group block w-full text-left transition-transform hover:-translate-y-0.5"
+                title="Manage wallet"
+              >
+                <div className="truncate text-xs text-[#6b563f] group-hover:text-[#3f2818]">
+                  {walletAddress}
                 </div>
-              </>
+                <div className="mt-2 text-lg font-bold">
+                  {wallet.isBalanceLoading
+                    ? 'Loading…'
+                    : `${walletBalance.toFixed(4)} ${walletBalanceSymbol}`}
+                </div>
+                <div className="mt-1 text-[10px] uppercase tracking-wider text-[#2f5d7e] opacity-0 transition-opacity group-hover:opacity-100">
+                  Click to manage →
+                </div>
+              </button>
             ) : (
               <>
                 <div className="text-xs text-[#9c342d]">Connect via WalletConnect to continue.</div>
                 <button
                   type="button"
-                  onClick={onConnectWallet}
-                  disabled={!isWalletReady || isWalletConnecting || !onConnectWallet}
+                  onClick={wallet.open}
+                  disabled={!isWalletReady || isWalletConnecting}
                   className="pixel-frame mt-2 flex items-center gap-2 px-3 py-1.5 text-sm font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0"
                 >
                   <PixelFrameChrome
@@ -473,8 +480,8 @@ export default function ReviewBountyGateOverlay({
         ) : (
           <button
             type="button"
-            onClick={onConnectWallet}
-            disabled={!isWalletReady || isWalletConnecting || !onConnectWallet}
+            onClick={wallet.open}
+            disabled={!isWalletReady || isWalletConnecting}
             className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
           >
             <PixelFrameChrome

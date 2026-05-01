@@ -11,7 +11,6 @@ import { buildAICharactersForRoom } from './data/mockCharacters';
 import { MOCK_FINAL_RESULT_INPUTS } from './data/mockFinalResults';
 import { buildNodeResultRows, type NodeEvaluationInput } from './utils/finalResults';
 import { useNodeChat } from './hooks/useNodeChat';
-import { useWallet } from './services/wallet/useWallet';
 
 import Character from './components/Character';
 import ReviewBountyGateOverlay, { type ConfirmedReviewBounty } from './components/ReviewBountyGateOverlay';
@@ -572,7 +571,6 @@ export default function App() {
   const [roundIntro, setRoundIntro] = useState<{ round: 1 | 2 | 3; id: number } | null>(null);
   const [roundResultHoldRound, setRoundResultHoldRound] = useState<1 | 2 | 3 | null>(null);
   const nodeChat = useNodeChat(evaluationId);
-  const wallet = useWallet();
   const charactersRef = useRef(characters);
   const activeConversationsRef = useRef(activeConversations);
   const selectedConversationIdRef = useRef(selectedConversationId);
@@ -1481,13 +1479,6 @@ export default function App() {
 
           {!isFinalResultVisible && phase === 'IDLE' && (
             <ReviewBountyGateOverlay
-              isWalletConnected={wallet.isConnected}
-              isWalletReady={wallet.isReady}
-              isWalletConnecting={wallet.isConnecting}
-              walletAddress={wallet.shortAddress ?? ''}
-              walletBalance={wallet.balance}
-              walletBalanceSymbol={wallet.balanceSymbol}
-              onConnectWallet={wallet.open}
               reviewBounty={roomReviewBounty}
               onBack={returnToRoomSelection}
               onConfirmed={(reviewBounty) => {
