@@ -1,0 +1,304 @@
+import { X } from 'lucide-react';
+import { motion } from 'motion/react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { NodeChatState, NodeEvaluationResult } from '../types';
+import NodeChatPanel from './NodeChatPanel';
+import NodeDetailTabs, { NodeDetailTab } from './NodeDetailTabs';
+import RoundHistoryList from './RoundHistoryList';
+import TokenFlowBadge from './TokenFlowBadge';
+import { ASSET_PATHS } from '../assets/assetPaths';
+import { PixelFrameChrome } from './PixelFrame';
+
+interface NodeDetailDrawerProps {
+  node: NodeEvaluationResult | null;
+  open: boolean;
+  chat: NodeChatState;
+  isChatSending?: boolean;
+  chatError?: string | null;
+  onClose: () => void;
+  onSendChatMessage: (message: string) => void;
+}
+
+const statusLabels = {
+  within_range: 'Within Range',
+  outlier: 'Outlier',
+  rewarded: 'Bounty Won',
+  slashed: 'Slashed',
+};
+
+const statusTone = {
+  within_range: 'node-report-stamp--yellow',
+  outlier: 'node-report-stamp--red',
+  rewarded: 'node-report-stamp--yellow',
+  slashed: 'node-report-stamp--red',
+};
+
+export default function NodeDetailDrawer({
+  node,
+  open,
+  chat,
+  isChatSending,
+  chatError,
+  onClose,
+  onSendChatMessage,
+}: NodeDetailDrawerProps) {
+  const [activeTab, setActiveTab] = useState<NodeDetailTab>('summary');
+
+  useEffect(() => {
+    setActiveTab('summary');
+  }, [node?.id]);
+
+  if (!open || !node) return null;
+
+  const tokenFlow = node.rewardAmount - node.slashAmount;
+  const finalHistory = node.roundHistory.find((item) => item.round === 'final') ?? node.roundHistory.at(-1);
+  const reviewerAssets = ASSET_PATHS.characters.reviewers[node.id];
+  const profileImage = reviewerAssets?.idle ?? node.avatar ?? reviewerAssets?.portrait;
+  const fallbackAvatar = node.avatar ?? reviewerAssets?.portrait ?? reviewerAssets?.idle;
+  const trustDelta = node.trustAfter - node.trustBefore;
+  const trustDeltaLabel = trustDelta > 0 ? `+${trustDelta}` : `${trustDelta}`;
+
+  return (
+    <>
+      <motion.button
+        type="button"
+        className="node-report-backdrop fixed inset-0 z-[89] cursor-default bg-transparent"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={onClose}
+        aria-label="Close node details"
+        tabIndex={-1}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+      />
+      <motion.aside
+        initial={{ x: 420, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 420, opacity: 0 }}
+        className="node-report-drawer fixed bottom-0 right-0 top-0 z-[90] w-full max-w-[31rem] overflow-hidden"
+        aria-label={`${node.name} node evaluation report`}
+      >
+        <div className="node-report-binder">
+          <NodeDetailTabs activeTab={activeTab} onChange={setActiveTab} />
+
+          <span className="node-report-side-tab node-report-side-tab--red" aria-hidden="true" />
+          <span className="node-report-side-tab node-report-side-tab--cyan" aria-hidden="true" />
+          <span className="node-report-side-tab node-report-side-tab--gold" aria-hidden="true" />
+          <span className="node-report-paperclip node-report-paperclip--top" aria-hidden="true" />
+          <button
+            type="button"
+            className="node-report-close pixel-frame flex h-8 w-8 items-center justify-center text-[#5f211c] transition-transform hover:-translate-y-0.5 hover:brightness-105"
+            onClick={onClose}
+            aria-label="Close node details"
+            title="Close node details"
+          >
+            <PixelFrameChrome
+              round={2}
+              thickness={3}
+              color="#9c342d"
+              fillColor="#d87965"
+              innerHighlightColor="rgba(255, 255, 255, 0.24)"
+              outerShadowColor="rgba(95, 33, 28, 0.22)"
+              outerShadowOffsetX={2}
+              outerShadowOffsetY={2}
+            />
+            <X className="relative z-40" size={18} />
+          </button>
+          <span className="node-report-paperclip node-report-paperclip--bottom" aria-hidden="true" />
+
+          <div className="node-report-page">
+            <header className="node-report-header">
+              <div className="node-report-header-main">
+                <div className="node-report-profile-card">
+                  <div className="node-report-profile-photo">
+                    <img
+                      src={profileImage}
+                      alt={node.name}
+                      onError={(event) => {
+                        if (!fallbackAvatar || event.currentTarget.src.endsWith(fallbackAvatar)) return;
+                        event.currentTarget.src = fallbackAvatar;
+                      }}
+                    />
+                  </div>
+                  <span className={`node-report-profile-stamp ${statusTone[node.status]}`}>
+                    {statusLabels[node.status]}
+                  </span>
+                </div>
+                <div className="node-report-heading">
+                  <p className="node-report-kicker">Node Evaluation Report</p>
+                  <h2>{node.name}</h2>
+                  <div className="node-report-scoreline">
+                    <span>Final Score {node.finalScore}</span>
+                    <span className={trustDelta > 0 ? 'node-report-trust-up' : trustDelta < 0 ? 'node-report-trust-down' : ''}>
+                      Trust {trustDeltaLabel}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <div className="node-report-content">
+              {activeTab === 'summary' && (
+                <>
+                  <p className="node-report-narrative node-report-narrative--plain">
+                    {node.finalReasoning || finalHistory?.reasoning || 'No final reasoning is available for this node yet.'}
+                  </p>
+
+                  <NodeSummaryCard node={node} tokenFlow={tokenFlow} />
+                </>
+              )}
+
+              {activeTab === 'history' && (
+                <section className="node-report-section node-report-history">
+                  <div className="node-report-section-heading">
+                    <h3>Round History</h3>
+                  </div>
+                  <RoundHistoryScrollPanel>
+                    <RoundHistoryList history={node.roundHistory} />
+                  </RoundHistoryScrollPanel>
+                </section>
+              )}
+
+              {activeTab === 'chat' && (
+                <section className="node-report-section node-report-chat">
+                  <NodeChatPanel
+                    node={node}
+                    chat={chat}
+                    isSending={isChatSending}
+                    error={chatError}
+                    onSend={onSendChatMessage}
+                  />
+                </section>
+              )}
+            </div>
+          </div>
+        </div>
+      </motion.aside>
+    </>
+  );
+}
+
+function RoundHistoryScrollPanel({ children }: { children: ReactNode }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef<{ offsetY: number } | null>(null);
+  const [thumb, setThumb] = useState({ top: 0, height: 28, canScroll: false });
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return undefined;
+
+    const updateThumb = () => {
+      const railHeight = railRef.current?.clientHeight ?? 0;
+      const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+      const canScroll = railHeight > 0 && maxScroll > 1;
+      const height = canScroll
+        ? Math.max(24, Math.min(44, (scroller.clientHeight / scroller.scrollHeight) * railHeight))
+        : 28;
+      const maxTop = Math.max(0, railHeight - height);
+      const top = canScroll ? (scroller.scrollTop / maxScroll) * maxTop : 0;
+      setThumb({ top, height, canScroll });
+    };
+
+    const resizeObserver = new ResizeObserver(updateThumb);
+    resizeObserver.observe(scroller);
+    if (scroller.firstElementChild) resizeObserver.observe(scroller.firstElementChild);
+    scroller.addEventListener('scroll', updateThumb, { passive: true });
+    window.addEventListener('resize', updateThumb);
+    updateThumb();
+
+    return () => {
+      resizeObserver.disconnect();
+      scroller.removeEventListener('scroll', updateThumb);
+      window.removeEventListener('resize', updateThumb);
+    };
+  }, [children]);
+
+  const moveThumbTo = (clientY: number, offsetY = thumb.height / 2) => {
+    const scroller = scrollerRef.current;
+    const rail = railRef.current;
+    if (!scroller || !rail) return;
+
+    const railRect = rail.getBoundingClientRect();
+    const maxTop = Math.max(0, railRect.height - thumb.height);
+    const nextTop = Math.max(0, Math.min(maxTop, clientY - railRect.top - offsetY));
+    const scrollRatio = maxTop === 0 ? 0 : nextTop / maxTop;
+    scroller.scrollTop = scrollRatio * (scroller.scrollHeight - scroller.clientHeight);
+  };
+
+  return (
+    <div className="node-report-history-scroll-wrap">
+      <div className="node-report-scroll" ref={scrollerRef}>
+        {children}
+      </div>
+      <div
+        className={`node-report-scroll-rail ${thumb.canScroll ? 'node-report-scroll-rail--active' : ''}`}
+        ref={railRef}
+        onPointerDown={(event) => moveThumbTo(event.clientY)}
+        aria-hidden={!thumb.canScroll}
+      >
+        <button
+          type="button"
+          className="node-report-scroll-thumb"
+          style={{ height: thumb.height, transform: `translate(-50%, ${thumb.top}px)` }}
+          tabIndex={thumb.canScroll ? 0 : -1}
+          aria-label="Scroll round history"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            draggingRef.current = { offsetY: event.clientY - event.currentTarget.getBoundingClientRect().top };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (!draggingRef.current) return;
+            moveThumbTo(event.clientY, draggingRef.current.offsetY);
+          }}
+          onPointerUp={(event) => {
+            draggingRef.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
+          onPointerCancel={() => {
+            draggingRef.current = null;
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function NodeSummaryCard({ node, tokenFlow }: { node: NodeEvaluationResult; tokenFlow: number }) {
+  const trustDelta = node.trustAfter - node.trustBefore;
+  const trustDeltaLabel = trustDelta > 0 ? `+${trustDelta}` : `${trustDelta}`;
+
+  return (
+    <section className="node-report-section">
+      <div className="node-report-section-heading">
+        <h3>Score Sheet</h3>
+      </div>
+      <div className="node-report-metric-grid">
+        <Info label="Status" value={node.status.replace('_', ' ')} />
+        <Info label="Final Score" value={node.finalScore} />
+        <Info label="Trust Change" value={trustDeltaLabel} tone={trustDelta > 0 ? 'positive' : trustDelta < 0 ? 'negative' : undefined} />
+        <Info label="Stake" value={`${node.stakeAmount.toFixed(1)} TOK`} />
+        <Info label="Bounty" value={`${node.bountyRewardAmount.toFixed(2)} USDT`} />
+      </div>
+      <div className="node-report-ledger-line">
+        <span>Stake Flow</span>
+        <div>
+          <TokenFlowBadge amount={tokenFlow} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Info({ label, value, tone }: { label: string; value: string | number; tone?: 'positive' | 'negative' }) {
+  return (
+    <div className={`node-report-metric ${tone ? `node-report-metric--${tone}` : ''}`}>
+      <div>{label}</div>
+      <strong>{value}</strong>
+    </div>
+  );
+}

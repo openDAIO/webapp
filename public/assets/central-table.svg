@@ -1,0 +1,5 @@
+<svg width="256" height="128" viewBox="0 0 256 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Placeholder for central table -->
+  <rect width="256" height="128" fill="#2d3436" rx="4" />
+  <rect x="8" y="8" width="240" height="112" fill="none" stroke="white" stroke-opacity="0.1" rx="2" />
+</svg>
