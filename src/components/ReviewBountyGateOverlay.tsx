@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle2, CircleDollarSign, Loader2, LockKeyhole, Upload, Wallet } from 'lucide-react';
+import { ArrowLeft, CircleDollarSign, Loader2, LockKeyhole, Upload, Wallet } from 'lucide-react';
 import PixelFrame, { PixelFrameChrome } from './PixelFrame';
 
 export interface ConfirmedReviewBounty {
@@ -12,6 +12,11 @@ export interface ConfirmedReviewBounty {
 interface ReviewBountyGateOverlayProps {
   walletAddress: string;
   walletBalance: number;
+  walletBalanceSymbol?: string;
+  isWalletConnected?: boolean;
+  isWalletReady?: boolean;
+  isWalletConnecting?: boolean;
+  onConnectWallet?: () => void;
   reviewBounty: ConfirmedReviewBounty | null;
   onConfirmed: (reviewBounty: ConfirmedReviewBounty) => void;
   onSubmitPaper: (title: string, link: string) => void;
@@ -21,8 +26,9 @@ interface ReviewBountyGateOverlayProps {
 type PaymentStep = 'idle' | 'signing' | 'confirming' | 'confirmed';
 
 const MIN_REVIEW_BOUNTY = 10;
-const NETWORK_FEE_POL = 0.003;
-const NETWORK_NAME = 'Polygon Amoy';
+const NETWORK_FEE_NATIVE = 0.0008;
+const NETWORK_FEE_SYMBOL = 'ETH';
+const NETWORK_NAME = 'Ethereum Sepolia';
 const SCANNER_IDLE_SRC = '/assets/submission-scanner/file-upload-scanner.png';
 const SCANNER_SUBMITTING_SRC = '/assets/submission-scanner/file-upload-scanner-submit.gif';
 
@@ -34,6 +40,11 @@ function buildMockTxHash() {
 export default function ReviewBountyGateOverlay({
   walletAddress,
   walletBalance,
+  walletBalanceSymbol = 'POL',
+  isWalletConnected = true,
+  isWalletReady = true,
+  isWalletConnecting = false,
+  onConnectWallet,
   reviewBounty,
   onConfirmed,
   onSubmitPaper,
@@ -50,7 +61,7 @@ export default function ReviewBountyGateOverlay({
 
   const amount = Number(amountInput);
   const isAmountValid = Number.isFinite(amount) && amount >= MIN_REVIEW_BOUNTY && amount <= walletBalance;
-  const canConfirm = isAmountValid && paymentStep === 'idle';
+  const canConfirm = isAmountValid && paymentStep === 'idle' && isWalletConnected;
   const isReviewBountyConfirmed = Boolean(reviewBounty) || paymentStep === 'confirmed';
 
   useEffect(() => {
@@ -60,12 +71,13 @@ export default function ReviewBountyGateOverlay({
   }, []);
 
   const helperText = useMemo(() => {
+    if (!isWalletConnected) return 'Connect your wallet to fund the review bounty.';
     if (!amountInput) return `Enter at least ${MIN_REVIEW_BOUNTY} USDT.`;
     if (!Number.isFinite(amount) || amount <= 0) return 'Enter a valid USDT amount.';
     if (amount < MIN_REVIEW_BOUNTY) return `Minimum review bounty is ${MIN_REVIEW_BOUNTY} USDT.`;
-    if (amount > walletBalance) return 'Review bounty cannot exceed your wallet balance.';
+    if (amount > walletBalance) return `Review bounty cannot exceed your wallet balance (${walletBalance.toFixed(2)} ${walletBalanceSymbol}).`;
     return 'Amount verified against your wallet balance.';
-  }, [amount, amountInput, walletBalance]);
+  }, [amount, amountInput, isWalletConnected, walletBalance, walletBalanceSymbol]);
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -312,10 +324,45 @@ export default function ReviewBountyGateOverlay({
           >
             <div className="mb-2 flex items-center gap-2 text-sm font-bold">
               <Wallet size={18} />
-              Connected Wallet
+              {isWalletConnected ? 'Connected Wallet' : 'Wallet Not Connected'}
             </div>
-            <div className="truncate text-xs text-[#6b563f]">{walletAddress}</div>
-            <div className="mt-2 text-lg font-bold">{walletBalance.toFixed(2)} USDT</div>
+            {isWalletConnected ? (
+              <>
+                <div className="truncate text-xs text-[#6b563f]">{walletAddress}</div>
+                <div className="mt-2 text-lg font-bold">
+                  {walletBalance.toFixed(2)} {walletBalanceSymbol}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-xs text-[#9c342d]">Connect via WalletConnect to continue.</div>
+                <button
+                  type="button"
+                  onClick={onConnectWallet}
+                  disabled={!isWalletReady || isWalletConnecting || !onConnectWallet}
+                  className="pixel-frame mt-2 flex items-center gap-2 px-3 py-1.5 text-sm font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0"
+                >
+                  <PixelFrameChrome
+                    round={2}
+                    thickness={3}
+                    color="#5f4328"
+                    fillColor="#8fbf7a"
+                    innerHighlightColor="rgba(255, 255, 255, 0.24)"
+                    outerShadowColor="rgba(80, 53, 33, 0.25)"
+                    outerShadowOffsetX={2}
+                    outerShadowOffsetY={2}
+                  />
+                  <span className="relative z-40 flex items-center gap-2">
+                    {isWalletConnecting ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Wallet size={14} />
+                    )}
+                    {isWalletReady ? 'Connect Wallet' : 'WalletConnect Disabled'}
+                  </span>
+                </button>
+              </>
+            )}
           </PixelFrame>
           <PixelFrame
             className="p-3"
@@ -332,7 +379,7 @@ export default function ReviewBountyGateOverlay({
               Reward Pool Contract
             </div>
             <div className="text-xs text-[#6b563f]">Network: {NETWORK_NAME}</div>
-            <div className="mt-2 text-lg font-bold">Gas {NETWORK_FEE_POL.toFixed(3)} POL</div>
+            <div className="mt-2 text-lg font-bold">Gas {NETWORK_FEE_NATIVE.toFixed(4)} {NETWORK_FEE_SYMBOL}</div>
           </PixelFrame>
         </div>
 
@@ -353,11 +400,11 @@ export default function ReviewBountyGateOverlay({
               id="review-bounty-amount"
               type="number"
               min={MIN_REVIEW_BOUNTY}
-              max={walletBalance}
+              max={isWalletConnected ? walletBalance : undefined}
               step="1"
               inputMode="decimal"
               value={amountInput}
-              disabled={paymentStep !== 'idle'}
+              disabled={paymentStep !== 'idle' || !isWalletConnected}
               onChange={(event) => setAmountInput(event.target.value)}
               className="number-input-clean min-w-0 bg-transparent px-4 py-3 text-2xl font-bold text-[#503521] outline-none disabled:opacity-70"
             />
@@ -385,49 +432,76 @@ export default function ReviewBountyGateOverlay({
           </div>
           <div className="mt-1 flex justify-between gap-3">
             <span>Estimated gas fee</span>
-            <strong className="text-[#503521]">{NETWORK_FEE_POL.toFixed(3)} POL</strong>
+            <strong className="text-[#503521]">{NETWORK_FEE_NATIVE.toFixed(4)} {NETWORK_FEE_SYMBOL}</strong>
           </div>
           {txHash && <div className="mt-2 truncate text-[#2f5d7e]">Tx: {txHash}</div>}
         </PixelFrame>
 
-        <button
-          type="button"
-          onClick={handleConfirm}
-          disabled={!canConfirm}
-          className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
-        >
-          <PixelFrameChrome
-            round={2}
-            thickness={4}
-            color="#5f4328"
-            fillColor="#8fbf7a"
-            innerHighlightColor="rgba(255, 255, 255, 0.24)"
-            outerShadowColor="rgba(80, 53, 33, 0.25)"
-            outerShadowOffsetX={4}
-            outerShadowOffsetY={4}
-          />
-          <span className="relative z-40 flex items-center justify-center gap-2">
-          {paymentStep === 'idle' && 'Pay Review Bounty'}
-          {paymentStep === 'signing' && (
-            <>
-              <Loader2 size={18} className="animate-spin" />
-              Wallet payment pending
-            </>
-          )}
-          {paymentStep === 'confirming' && (
-            <>
-              <Loader2 size={18} className="animate-spin" />
-              Waiting for payment confirmation
-            </>
-          )}
-          {paymentStep === 'confirmed' && (
-            <>
-              <CheckCircle2 size={18} />
-              Review bounty paid
-            </>
-          )}
-          </span>
-        </button>
+        {isWalletConnected ? (
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={!canConfirm}
+            className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
+          >
+            <PixelFrameChrome
+              round={2}
+              thickness={4}
+              color="#5f4328"
+              fillColor="#8fbf7a"
+              innerHighlightColor="rgba(255, 255, 255, 0.24)"
+              outerShadowColor="rgba(80, 53, 33, 0.25)"
+              outerShadowOffsetX={4}
+              outerShadowOffsetY={4}
+            />
+            <span className="relative z-40 flex items-center justify-center gap-2">
+            {paymentStep === 'idle' && 'Pay Review Bounty'}
+            {paymentStep === 'signing' && (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Wallet payment pending
+              </>
+            )}
+            {paymentStep === 'confirming' && (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Waiting for payment confirmation
+              </>
+            )}
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onConnectWallet}
+            disabled={!isWalletReady || isWalletConnecting || !onConnectWallet}
+            className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
+          >
+            <PixelFrameChrome
+              round={2}
+              thickness={4}
+              color="#5f4328"
+              fillColor="#8fbf7a"
+              innerHighlightColor="rgba(255, 255, 255, 0.24)"
+              outerShadowColor="rgba(80, 53, 33, 0.25)"
+              outerShadowOffsetX={4}
+              outerShadowOffsetY={4}
+            />
+            <span className="relative z-40 flex items-center justify-center gap-2">
+              {isWalletConnecting ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Connecting wallet…
+                </>
+              ) : (
+                <>
+                  <Wallet size={18} />
+                  {isWalletReady ? 'Connect Wallet to Continue' : 'WalletConnect Not Configured'}
+                </>
+              )}
+            </span>
+          </button>
+        )}
           </>
         )}
       </section>

@@ -1,15 +1,16 @@
 
 import { motion } from 'motion/react';
-import { ArrowLeft, ArrowRight, Wallet } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Loader2, Wallet } from 'lucide-react';
 import { PixelFrameChrome } from './PixelFrame';
+import { useWallet } from '../services/wallet/useWallet';
 
 interface NavbarProps {
   activePage: 'dashboard' | 'commons' | 'room' | 'loading';
   onNavigate: (page: 'dashboard' | 'commons') => void;
-  isWalletConnected?: boolean;
 }
 
-export default function Navbar({ activePage, onNavigate, isWalletConnected = false }: NavbarProps) {
+export default function Navbar({ activePage, onNavigate }: NavbarProps) {
+  const wallet = useWallet();
   const targetPage = activePage === 'dashboard' ? 'commons' : 'dashboard';
   const isDashboardTarget = targetPage === 'dashboard';
   const buttonTone = isDashboardTarget
@@ -25,7 +26,7 @@ export default function Navbar({ activePage, onNavigate, isWalletConnected = fal
         text: '#23351f',
         shadow: 'rgba(43, 80, 38, 0.32)',
       };
-  const walletButtonTone = isWalletConnected
+  const walletButtonTone = wallet.isConnected
     ? {
         fill: '#fff8e6',
         highlight: 'rgba(255, 255, 255, 0.72)',
@@ -38,6 +39,20 @@ export default function Navbar({ activePage, onNavigate, isWalletConnected = fal
         text: '#5f211c',
         shadow: 'rgba(95, 33, 28, 0.32)',
       };
+
+  const walletLabel = !wallet.isReady
+    ? 'WalletConnect Disabled'
+    : wallet.isConnecting
+      ? 'Connecting…'
+      : wallet.isConnected && wallet.shortAddress
+        ? `${wallet.shortAddress} · ${wallet.balance.toFixed(2)} ${wallet.balanceSymbol}`
+        : 'Connect Wallet';
+
+  const walletAriaLabel = wallet.isConnected
+    ? 'Open wallet account'
+    : wallet.isReady
+      ? 'Connect wallet via WalletConnect'
+      : 'WalletConnect is not configured';
 
   return (
     <nav className="fixed left-0 top-0 z-50 flex h-16 w-full items-center justify-between px-6 text-[#503521]">
@@ -61,12 +76,20 @@ export default function Navbar({ activePage, onNavigate, isWalletConnected = fal
       </motion.button>
 
       <motion.button
-        whileHover={{ y: -1 }}
-        whileTap={{ y: 1 }}
-        className="pixel-frame flex items-center px-4 py-2 text-base font-bold transition-all hover:brightness-110 active:translate-y-1"
+        whileHover={wallet.isReady ? { y: -1 } : undefined}
+        whileTap={wallet.isReady ? { y: 1 } : undefined}
+        onClick={() => {
+          if (!wallet.isReady) return;
+          if (wallet.isConnected) wallet.openAccount();
+          else wallet.open();
+        }}
+        disabled={!wallet.isReady || wallet.isConnecting}
+        className="pixel-frame flex items-center px-4 py-2 text-base font-bold transition-all hover:brightness-110 active:translate-y-1 disabled:cursor-not-allowed disabled:opacity-70"
         style={{ color: walletButtonTone.text }}
         type="button"
-        aria-pressed={isWalletConnected}
+        aria-pressed={wallet.isConnected}
+        aria-label={walletAriaLabel}
+        title={walletAriaLabel}
       >
         <PixelFrameChrome
           round={2}
@@ -75,8 +98,8 @@ export default function Navbar({ activePage, onNavigate, isWalletConnected = fal
           outerShadowColor={walletButtonTone.shadow}
         />
         <span className="relative z-10 flex items-center gap-2">
-          <Wallet size={18} />
-          {isWalletConnected ? 'Wallet Connected' : 'Connect Wallet'}
+          {wallet.isConnecting ? <Loader2 size={18} className="animate-spin" /> : <Wallet size={18} />}
+          {walletLabel}
         </span>
       </motion.button>
     </nav>

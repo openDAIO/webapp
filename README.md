@@ -191,7 +191,7 @@ npm run generate:idle-gifs # public/assets/characters/reviewers PNG → idle GIF
 
 - 현재: `components/Navbar.tsx` 의 "Connect Wallet" 버튼은 시각적 placeholder, `App.tsx` 안 `MOCK_WALLET_ADDRESS` / `MOCK_WALLET_BALANCE` 사용.
 - 적용 대상: `Navbar`, `ReviewBountyGateOverlay`(USDT 바운티 결제), 결과 리포트의 tx hash 영역.
-- 후보 스택: **wagmi v2 + viem + RainbowKit** (또는 ConnectKit). 네트워크는 현재 mock 에서 사용 중인 **Polygon Amoy** 를 시작점으로.
+- 적용 스택: **Reown AppKit + wagmi + viem + @tanstack/react-query**. 기본 네트워크는 **Ethereum Sepolia** (`src/services/wallet/config.ts` 의 `DEFAULT_CHAIN` 으로 단일 진입점).
 - 작업 항목:
   - `src/services/wallet/` 디렉터리에 provider/hook 분리 (`useWallet`, `useReviewBountyPayment`)
   - `ReviewBountyGateOverlay` 의 `paymentStep` (`signing → confirming → confirmed`) 을 실제 트랜잭션 라이프사이클에 매핑
