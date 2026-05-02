@@ -84,6 +84,20 @@ export interface DaioData {
    */
   effectiveUsdaioPerEth: number;
 
+  // ── Latest request (wallet) ───────────────────────────────────────────────
+  /** Most recent requestId for the connected wallet. 0n when none. */
+  latestRequestId: bigint;
+  /**
+   * Raw status code from DAIOCore.RequestStatus:
+   *   0=None 1=Queued 2=ReviewCommit 3=ReviewReveal 4=AuditCommit
+   *   5=AuditReveal 6=Finalized 7=Cancelled 8=Failed 9=Unresolved
+   */
+  latestRequestStatus: number;
+  /** true while the request is actively being processed (Queued → AuditReveal). */
+  latestRequestProcessing: boolean;
+  /** true once the request reached a terminal state (Finalized / Cancelled / Failed / Unresolved). */
+  latestRequestCompleted: boolean;
+
   // ── Convenience addresses ──────────────────────────────────────────────────
   paymentRouterAddress: `0x${string}`;
   usdaioAddress: `0x${string}`;
@@ -119,6 +133,15 @@ export function useDaioData(): DaioData {
     | undefined;
   const poolSqrtPriceX96 = slot0?.[0];
 
+  // latestRequestState returns [requestId, status, processing, completed]
+  const requestState = data?.[DAIO_SLOT.LATEST_REQUEST_STATE]?.result as
+    | readonly [bigint, number, boolean, boolean]
+    | undefined;
+  const latestRequestId         = requestState?.[0] ?? 0n;
+  const latestRequestStatus     = requestState?.[1] ?? 0;
+  const latestRequestProcessing = requestState?.[2] ?? false;
+  const latestRequestCompleted  = requestState?.[3] ?? false;
+
   // ── Compute pool rate ─────────────────────────────────────────────────────
   const poolRateUsdaioPerEth = poolSqrtPriceX96
     ? sqrtPriceX96ToUsdaioPerEth(poolSqrtPriceX96)
@@ -148,6 +171,11 @@ export function useDaioData(): DaioData {
     poolRateUsdaioPerEth,
     poolFeePct: POOL_FEE_FRACTION * 100,  // e.g. 0.3
     effectiveUsdaioPerEth,
+
+    latestRequestId,
+    latestRequestStatus,
+    latestRequestProcessing,
+    latestRequestCompleted,
 
     paymentRouterAddress: CONTRACT_ADDRESSES.paymentRouter,
     usdaioAddress:        CONTRACT_ADDRESSES.usdaio,

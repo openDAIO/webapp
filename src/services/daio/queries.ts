@@ -34,15 +34,20 @@ export const CONTRACT_ADDRESSES = {
  */
 export const DAIO_SLOT = {
   /** DAIOCore.baseRequestFee() → bigint */
-  BASE_REQUEST_FEE:  0,
+  BASE_REQUEST_FEE:       0,
   /** USDAIO.balanceOf(wallet) → bigint  (undefined when not connected) */
-  USDAIO_BALANCE:    1,
+  USDAIO_BALANCE:         1,
   /** USDAIO.allowance(wallet, paymentRouter) → bigint  (undefined when not connected) */
-  USDAIO_ALLOWANCE:  2,
+  USDAIO_ALLOWANCE:       2,
   /** USDAIO.decimals() → number */
-  USDAIO_DECIMALS:   3,
+  USDAIO_DECIMALS:        3,
   /** PoolManager.getSlot0(poolKeyHash) → [sqrtPriceX96, tick, protocolFee, lpFee] */
-  POOL_SLOT0:        4,
+  POOL_SLOT0:             4,
+  /**
+   * PaymentRouter.latestRequestState(wallet) → [requestId, status, processing, completed]
+   * undefined when wallet not connected.
+   */
+  LATEST_REQUEST_STATE:   5,
 } as const;
 
 /**
@@ -87,6 +92,13 @@ export function buildDaioContracts(walletAddress: `0x${string}` | undefined) {
       abi:          UNISWAP_V4_POOL_MANAGER_ABI,
       functionName: 'getSlot0' as const,
       args:         [CONTRACT_ADDRESSES.poolKeyHash] as const,
+    },
+    // slot 5 — wallet only: latest request status from PaymentRouter
+    {
+      address:      walletAddress ? CONTRACT_ADDRESSES.paymentRouter : undefined,
+      abi:          PAYMENT_ROUTER_ABI,
+      functionName: 'latestRequestState' as const,
+      args:         walletAddress ? ([walletAddress] as const) : undefined,
     },
   ] as const;
 }

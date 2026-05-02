@@ -186,7 +186,22 @@ export default function ReviewBountyGateOverlay({
     amount <= balanceForAsset;
   const isPaymentInProgress = paymentStep !== 'idle' && paymentStep !== 'error';
   const canConfirm = isAmountValid && paymentStep === 'idle' && isWalletConnected;
-  const isReviewBountyConfirmed = Boolean(reviewBounty) || paymentStep === 'confirmed';
+
+  // On-chain request state (persists across refreshes via multicall)
+  const onChainProcessing = daioData.latestRequestProcessing;
+  const onChainCompleted  = daioData.latestRequestCompleted;
+  const onChainRequestId  = daioData.latestRequestId;
+  /** true when the wallet has a live in-progress request on-chain */
+  const isOnChainInProgress = isWalletConnected && onChainProcessing;
+  /**
+   * Show the "confirmed / upload paper" view when:
+   *   - local session has confirmed payment, OR
+   *   - the on-chain state shows processing/completed (survives page reload)
+   */
+  const isReviewBountyConfirmed =
+    Boolean(reviewBounty) ||
+    paymentStep === 'confirmed' ||
+    (isWalletConnected && (onChainProcessing || onChainCompleted) && onChainRequestId > 0n);
 
   const ethPerOneUsdaio = effectiveRate > 0 ? 1 / effectiveRate : 0;
 
@@ -377,7 +392,14 @@ export default function ReviewBountyGateOverlay({
               >
                 <div className="flex items-center justify-between gap-3 font-bold">
                   <span>Review Bounty Paid</span>
-                  <span>{(reviewBounty?.amount ?? settledUsdaio).toFixed(2)} USDAIO</span>
+                  <div className="flex items-center gap-2">
+                    {onChainRequestId > 0n && (
+                      <span className="text-[11px] font-bold text-[#6b563f]">
+                        Request #{onChainRequestId.toString()}
+                      </span>
+                    )}
+                    <span>{(reviewBounty?.amount ?? settledUsdaio).toFixed(2)} USDAIO</span>
+                  </div>
                 </div>
                 {reviewBounty?.paidWith && (
                   <div className="mt-1 flex items-center gap-1 text-[11px] font-bold text-[#2f5d7e]">
@@ -517,6 +539,15 @@ export default function ReviewBountyGateOverlay({
           </>
         ) : (
           <>
+        {/* On-chain in-progress banner — shown when wallet has an active request */}
+        {isOnChainInProgress && onChainRequestId > 0n && (
+          <div className="mb-4 flex items-center gap-2 rounded-sm border-l-4 border-[#2f5d7e] bg-[#2f5d7e]/10 px-4 py-3 text-sm font-bold text-[#2f5d7e]">
+            <Loader2 size={15} className="animate-spin flex-shrink-0" />
+            <span>
+              Request #{onChainRequestId.toString()} is currently being reviewed by the network.
+            </span>
+          </div>
+        )}
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#2f5d7e]">

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, DoorOpen, FileDown, LayoutDashboard } from 'lucide-react';
+import { useDaioData } from './services/daio/useDaioData';
 import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeEvaluationResult, ReviewGamePhase, ReviewRoundState, ReviewerNode, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
 import { buildAICharactersForRoom } from './data/mockCharacters';
 import { MOCK_FINAL_RESULT_INPUTS } from './data/mockFinalResults';
@@ -735,8 +736,14 @@ function roundIntroSubtitle(round: 1 | 2 | 3) {
 }
 
 export default function App() {
+  // Chain data — provides on-chain request status that survives page reload.
+  const daioData = useDaioData();
+
   const [page, setPage] = useState<AppPage>('commons');
-  const [selectedRoom, setSelectedRoom] = useState<ActiveReviewRoomId>('paper');
+  const [selectedRoom, setSelectedRoom] = useState<ActiveReviewRoomId>(() => {
+    const saved = localStorage.getItem('daio_selected_room');
+    return (saved === 'paper' || saved === 'judgment') ? saved : 'paper';
+  });
   const [loadingRoom, setLoadingRoom] = useState<ActiveReviewRoomId>('paper');
   const [characters, setCharacters] = useState<AICharacter[]>(() => buildAICharactersForRoom('paper').map(resetCharacter));
   const [phase, setPhase] = useState<SimulationPhase>('IDLE');
@@ -791,7 +798,12 @@ export default function App() {
     () => reviewParticipants.find((character) => character.id === selectedThinkingNodeId && character.status === 'THINKING') ?? null,
     [reviewParticipants, selectedThinkingNodeId],
   );
-  const isEvaluationInProgress = phase !== 'IDLE' || Boolean(roomReviewBounty) || Boolean(finalResult);
+  // Include on-chain processing state so "In Progress" persists after page reload.
+  const isEvaluationInProgress =
+    phase !== 'IDLE' ||
+    Boolean(roomReviewBounty) ||
+    Boolean(finalResult) ||
+    daioData.latestRequestProcessing;
   const activeReviewRoundState = useMemo(
     () => reviewRoundState ? { ...reviewRoundState, phase: reviewGamePhaseFromSimulation(phase) } : null,
     [phase, reviewRoundState],
@@ -990,6 +1002,7 @@ export default function App() {
 
   const enterRoom = useCallback(() => {
     setSelectedRoom(loadingRoom);
+    localStorage.setItem('daio_selected_room', loadingRoom);
     resetCycle(loadingRoom);
     setRoomReviewBounty(null);
     setLogs([]);
