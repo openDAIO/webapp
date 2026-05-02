@@ -96,11 +96,11 @@ const nodeScores: Array<[string, string, number, number, [number, number, number
 const formatAiId = (index: number) => `ai-${String(index).padStart(2, '0')}`;
 
 export const MOCK_FINAL_RESULT_INPUTS: NodeEvaluationInput[] = nodeScores.map(
-  ([id, name, trustBefore, stakeAmount, scores], index) => ({
+  ([id, name, reputationBefore, stakeAmount, scores], index) => ({
     id,
     name,
     finalScore: scores[3],
-    trustBefore,
+    reputationBefore,
     stakeAmount,
     roundHistory: buildHistory(
       name,

@@ -25,9 +25,9 @@ interface LoadingTransitionProps {
 }
 
 const REVIEWER_LOAD_COUNT = 5;
-const FIRST_REVIEWER_DELAY_MS = 520;
-const REVIEWER_ARRIVAL_INTERVAL_MS = 820;
-const COMPLETE_AFTER_FINAL_REVIEWER_MS = 900;
+const FIRST_REVIEWER_DELAY_MS = 360;
+const REVIEWER_ARRIVAL_INTERVAL_MS = 620;
+const COMPLETE_AFTER_FINAL_REVIEWER_MS = 520;
 
 export default function LoadingTransition({ roomId, reviewers, onComplete }: LoadingTransitionProps) {
   const [copyIndex, setCopyIndex] = useState(0);

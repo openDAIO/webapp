@@ -7,15 +7,15 @@ import {
 
 export const OUTLIER_STDDEV_MULTIPLIER = 1;
 export const SLASH_RATE = 0.4;
-export const OUTLIER_TRUST_PENALTY = 5;
-export const ELIGIBLE_TRUST_REWARD = 1;
+export const OUTLIER_REPUTATION_PENALTY = 5;
+export const ELIGIBLE_REPUTATION_REWARD = 1;
 
 export interface NodeEvaluationInput {
   id: string;
   name: string;
   avatar?: string;
   finalScore: number;
-  trustBefore: number;
+  reputationBefore: number;
   stakeAmount?: number;
   roundHistory?: RoundEvaluationHistory[];
 }
@@ -95,11 +95,11 @@ export function calculateSlashingAndRedistribution(
       const slashAmount = isOutlier ? stakeAmount * SLASH_RATE : 0;
       const rewardAmount = 0;
       const bountyRewardAmount = !isOutlier && summary.eligibleNodeCount > 0 ? summary.bountyPerEligibleNode : 0;
-      const trustAfter = Math.max(
+      const reputationAfter = Math.max(
         0,
         Math.min(
           100,
-          node.trustBefore + (isOutlier ? -OUTLIER_TRUST_PENALTY : bountyRewardAmount > 0 ? ELIGIBLE_TRUST_REWARD : 0),
+          node.reputationBefore + (isOutlier ? -OUTLIER_REPUTATION_PENALTY : bountyRewardAmount > 0 ? ELIGIBLE_REPUTATION_REWARD : 0),
         ),
       );
       const status: NodeEvaluationStatus = isOutlier
@@ -115,8 +115,8 @@ export function calculateSlashingAndRedistribution(
         name: node.name,
         avatar: node.avatar,
         finalScore: node.finalScore,
-        trustBefore: node.trustBefore,
-        trustAfter,
+        reputationBefore: node.reputationBefore,
+        reputationAfter,
         stakeAmount,
         isOutlier,
         slashAmount,

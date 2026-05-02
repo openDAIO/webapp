@@ -120,7 +120,7 @@ export default function StandardDeviationChart({
   const labelTops = compact ? [0, 0, 0] : [0, 18, 36];
   const axisTop = prominent ? compact ? 30 : 58 : 0;
   const rangeLabelTop = axisTop + 20;
-  const averageValueTop = axisTop + (averageBoxed ? 48 : 31);
+  const averageValueTop = compact ? axisTop + 28 : axisTop + (averageBoxed ? 48 : 31);
   const chartHeightClass = prominent
     ? averageBoxed
       ? 'mb-1 h-[170px]'
@@ -242,7 +242,22 @@ export default function StandardDeviationChart({
                   className={`absolute z-10 flex flex-col items-center ${prominent ? '' : 'top-1/2 -translate-y-1/2'}`}
                   style={prominent ? { top: `${axisTop}px` } : undefined}
                 >
-                   <div className={`${prominent ? 'h-3 w-3 border-2' : 'h-2.5 w-2.5 border'} rounded-full ${scoreboard ? 'border-[#d9f7ff] shadow-[0_0_8px_rgba(159,248,255,0.45)]' : 'border-[#503521] shadow-sm'} ${char.isOutlier ? 'bg-red-500 animate-ping' : char.color}`} />
+                   {prominent && compact && scoreboard ? (
+                     <img
+                       src={faceIconPath(char)}
+                       alt={char.name}
+                       className="h-5 w-5 object-contain drop-shadow-[0_0_4px_rgba(159,248,255,0.7)]"
+                       onError={(event) => {
+                         const fallback = fallbackPortraitPath(char);
+                         event.currentTarget.onerror = null;
+                         if (fallback) {
+                           event.currentTarget.src = fallback;
+                         }
+                       }}
+                     />
+                   ) : (
+                     <div className={`${prominent ? 'h-3 w-3 border-2' : 'h-2.5 w-2.5 border'} rounded-full ${scoreboard ? 'border-[#d9f7ff] shadow-[0_0_8px_rgba(159,248,255,0.45)]' : 'border-[#503521] shadow-sm'} ${char.isOutlier ? 'bg-red-500 animate-ping' : char.color}`} />
+                   )}
                    <div className={`mt-0.5 whitespace-nowrap font-mono font-bold leading-none ${prominent ? 'sr-only' : 'text-[9px]'}`}>
                      {char.lastScore}
                    </div>
@@ -250,7 +265,7 @@ export default function StandardDeviationChart({
               );
             })}
 
-            {prominent && !compact && characters
+            {prominent && hasPlottedScores && characters
               .filter(hasScoreForDisplay)
               .map((character) => {
                 const layout = groupLayoutByCharacterId.get(character.id) ?? { lane: 0, offset: 0 };
@@ -262,8 +277,10 @@ export default function StandardDeviationChart({
                     initial={{ opacity: 0, left: positionFor(score), marginLeft: layout.offset, y: 4 }}
                     animate={{ opacity: 1, left: positionFor(score), marginLeft: layout.offset, y: 0 }}
                     transition={{ type: 'spring', stiffness: 220, damping: 28 }}
-                    className={`absolute z-10 -translate-x-1/2 font-mono text-xs font-bold leading-none ${character.isOutlier ? 'text-red-400' : scoreboard ? 'text-[#9effc2]' : 'text-green-500'}`}
-                    style={{ top: `${axisTop + 8}px` }}
+                    className={`absolute z-10 -translate-x-1/2 font-mono font-bold leading-none ${
+                      compact ? 'text-[10px]' : 'text-xs'
+                    } ${character.isOutlier ? 'text-red-400' : scoreboard ? 'text-[#9effc2]' : 'text-green-500'}`}
+                    style={{ top: `${compact ? Math.max(2, axisTop - 18) : axisTop + 8}px` }}
                   >
                     {score}
                   </motion.div>
@@ -282,11 +299,11 @@ export default function StandardDeviationChart({
             >
               {chartMax.toFixed(1)}
             </div>
-            {prominent && hasPlottedScores && !compact && (
+            {prominent && hasPlottedScores && (
               <motion.div
                 className={`absolute z-20 flex -translate-x-1/2 flex-col items-center gap-1 leading-none ${labelTextClass} ${
                   scoreboard
-                    ? `scoreboard-consensus-box ${highlightUpdate ? 'scoreboard-consensus-box--updated' : ''} border-2 border-dashed border-[#f1c46d] bg-[#1b2b3a] px-3 py-2`
+                    ? `scoreboard-consensus-box ${highlightUpdate ? 'scoreboard-consensus-box--updated' : ''} border-2 border-dashed border-[#f1c46d] bg-[#1b2b3a] ${compact ? 'px-2 py-1' : 'px-3 py-2'}`
                     : ''
                 } ${
                   averageBoxed
@@ -311,18 +328,18 @@ export default function StandardDeviationChart({
                   />
                 )}
                 {analysisRoundLabel && (
-                  <span className="relative z-40 whitespace-nowrap font-mono text-[10px] font-bold uppercase tracking-widest text-[#9ff8ff]">
+                  <span className={`relative z-40 whitespace-nowrap font-mono font-bold uppercase tracking-widest text-[#9ff8ff] ${compact ? 'text-[8px]' : 'text-[10px]'}`}>
                     {analysisRoundLabel}
                   </span>
                 )}
                 <span
-                  className={`relative z-40 whitespace-nowrap font-pixel text-[12px] font-bold uppercase tracking-widest ${
+                  className={`relative z-40 whitespace-nowrap font-pixel font-bold uppercase tracking-widest ${compact ? 'text-[8px]' : 'text-[12px]'} ${
                     scoreboard ? 'text-[#ffd98a]' : mutedTextClass
                   }`}
                 >
                   Consensus Analysis
                 </span>
-                <span className="relative z-40 font-mono text-3xl font-bold">{avg.toFixed(1)}</span>
+                <span className={`relative z-40 font-mono font-bold ${compact ? 'text-lg' : 'text-3xl'}`}>{avg.toFixed(1)}</span>
                 {averageDetail && <span className="relative z-40">{averageDetail}</span>}
               </motion.div>
             )}

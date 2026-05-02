@@ -22,6 +22,92 @@ export type NodeStatus =
 
 export type NodeSelectionStatus = 'selected' | 'standby';
 
+export type ReviewGamePhase =
+  | 'selection'
+  | 'round1'
+  | 'round2'
+  | 'round3'
+  | 'final';
+
+export type AuditStatus = 'pending' | 'accepted' | 'ignored' | 'cancelled';
+
+export interface Audit {
+  id: string;
+  fromReviewerId: string;
+  toReviewerId: string;
+  score: number;
+  status: AuditStatus;
+  arrivalOrder: number;
+  createdAt?: number;
+  acceptedAt?: number;
+}
+
+export interface ReviewerReputation {
+  sampleCount: number;
+  reportQuality: number;
+  auditReliability: number;
+  finalContribution: number;
+  protocolCompliance: number;
+  reputationScore: number;
+}
+
+export interface ReviewerNodeRound0 {
+  reviewerScore: number;
+  reviewerWeight: number;
+  weightedScore: number;
+}
+
+export interface ReviewerNodeRound1 {
+  incomingAuditScores: number[];
+  auditScore: number;
+  normalizedQuality: number;
+  reliability: number;
+  contribution: number;
+  reviewerWeight: number;
+  weightedScore: number;
+  scoreImpact: number;
+}
+
+export interface ReviewerNodeRound2 {
+  round1Weight: number;
+  reputationScore: number;
+  finalWeight: number;
+  weightedScore: number;
+  finalContribution: number;
+}
+
+export interface ReviewerNode {
+  id: string;
+  name: string;
+  avatar?: string;
+  sprite?: string;
+  selected: boolean;
+  status?: 'selected' | 'standby' | 'reviewing' | 'auditing' | 'complete';
+  proposalScore: number;
+  reputationScore: number;
+  reviewSummary: string;
+  round0?: ReviewerNodeRound0;
+  round1?: ReviewerNodeRound1;
+  reputation?: ReviewerReputation;
+  round2?: ReviewerNodeRound2;
+}
+
+export interface ReviewRoundState {
+  phase: ReviewGamePhase;
+  selectedReviewerIds: string[];
+  reviewers: ReviewerNode[];
+  round0ConsensusScore?: number;
+  round1ConsensusScore?: number;
+  round2ConsensusScore?: number;
+  audits: Audit[];
+  auditQuorum: number;
+  acceptedAuditCount: number;
+  fallbackUsed?: {
+    round1: boolean;
+    round2: boolean;
+  };
+}
+
 export interface RoundScore {
   round: number;
   score: number;
@@ -79,8 +165,8 @@ export interface NodeEvaluationResult {
   name: string;
   avatar?: string;
   finalScore: number;
-  trustBefore: number;
-  trustAfter: number;
+  reputationBefore: number;
+  reputationAfter: number;
   stakeAmount: number;
   isOutlier: boolean;
   slashAmount: number;
@@ -89,6 +175,7 @@ export interface NodeEvaluationResult {
   status: NodeEvaluationStatus;
   finalReasoning: string;
   roundHistory: RoundEvaluationHistory[];
+  reviewNode?: ReviewerNode;
   chat?: NodeChatState;
 }
 
@@ -122,7 +209,7 @@ export interface AICharacter {
   emoji: string;
   speed: number;
   quality: number; // 0-1, affects how well it evaluates and responds
-  trustScore: number;
+  reputationScore: number;
   stakeAmount: number;
   discussionSummary?: string;
   scoreReasoning?: string;

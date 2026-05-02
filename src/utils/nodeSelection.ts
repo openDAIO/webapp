@@ -55,5 +55,9 @@ export function getSelectedReviewNodes<T extends SelectableNode & { selected?: b
 export function getReviewParticipants<T extends SelectableNode & { selected?: boolean }>(nodes: T[]) {
   const selectedNodes = getSelectedReviewNodes(nodes);
 
-  return selectedNodes.length > 0 ? selectedNodes : nodes;
+  if (selectedNodes.length >= DEFAULT_SELECTED_NODE_COUNT) {
+    return selectedNodes.slice(0, DEFAULT_SELECTED_NODE_COUNT);
+  }
+
+  return nodes.slice(0, DEFAULT_SELECTED_NODE_COUNT);
 }

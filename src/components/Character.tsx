@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { AICharacter } from '../types';
 import { ASSET_PATHS } from '../assets/assetPaths';
+import { CHARACTER_BASE_MOVE_DURATION_MS } from '../constants/reviewFlowTiming';
 
 interface CharacterProps {
   data: AICharacter;
@@ -100,20 +101,14 @@ export default function Character({ data, onClick, isSelected, showTalkingBubble
     }
   };
 
-  // State and identity-aware movement logic for the ai-01..ai-05 lab crew.
-  
-  const isReturning = data.status === 'RETURNING';
-
-  // For all characters: 
-  // Going (isReturning=false) -> Move Vertical then Horizontal (moveHV=false)
-  // Returning (isReturning=true) -> Move Horizontal then Vertical (moveHV=true)
-  const moveHV = isReturning;
+  // Lab-bound movement reads as vertical-then-horizontal; table-bound movement reads as horizontal-then-vertical.
+  const moveHorizontalThenVertical = data.status === 'DISCUSSING';
 
   // Use calc() to combine responsive percentages with fixed pixel offsets from the room
   const targetX = `calc(${data.position.x}% + ${data.position.offsetX || 0}px)`;
   const targetY = `calc(${data.position.y}% + ${data.position.offsetY || 0}px)`;
 
-  const movementSequence = moveHV ? {
+  const movementSequence = moveHorizontalThenVertical ? {
     // Horizontal then Vertical
     left: [null, targetX, targetX],
     top: [null, null, targetY],
@@ -133,7 +128,7 @@ export default function Character({ data, onClick, isSelected, showTalkingBubble
         y: '-50%',
       }}
       transition={{
-        duration: 1.5 / data.speed, // Slightly slower for more impact
+        duration: (CHARACTER_BASE_MOVE_DURATION_MS / 1000) / data.speed,
         times: [0, 0.5, 1],
         ease: "easeInOut"
       }}
@@ -169,26 +164,26 @@ export default function Character({ data, onClick, isSelected, showTalkingBubble
             {shouldShowTalkingBubble ? (
               <img
                 src={ASSET_PATHS.effects.talkingBubble}
-                alt="대화중"
+                alt="Talking"
                 className="h-9 w-20 object-contain pixelated drop-shadow-[2px_2px_0_rgba(80,53,33,0.18)]"
                 onError={() => setTalkingBubbleError(true)}
               />
             ) : isTalking ? (
               <span className="block whitespace-nowrap rounded-sm border-2 border-[#7b5835] bg-white px-2 py-0.5 text-[#503521] shadow-sm">
-                대화중
+                Talking
               </span>
             ) : null}
             {shouldShowThoughtCloud ? (
               <img
                 key={thoughtCloudCycle}
                 src={`${ASSET_PATHS.effects.thoughtCloud}?cycle=${thoughtCloudCycle}`}
-                alt="연구중"
+                alt="Researching"
                 className="h-10 w-16 object-contain pixelated drop-shadow-[2px_2px_0_rgba(80,53,33,0.16)]"
                 onError={() => setThoughtCloudError(true)}
               />
             ) : isThinking ? (
               <span className="block whitespace-nowrap rounded-sm border-2 border-[#7b5835] bg-white px-2 py-0.5 text-[#503521] shadow-sm">
-                연구중
+                Researching
               </span>
             ) : null}
           </motion.div>

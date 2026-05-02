@@ -10,6 +10,7 @@ interface NodeSelectionSceneProps {
   isComplete: boolean;
   onSkip: () => void;
   onStartReview: () => void;
+  onInspectNode?: (nodeId: string) => void;
 }
 
 export default function NodeSelectionScene({
@@ -17,9 +18,8 @@ export default function NodeSelectionScene({
   isComplete,
   onSkip,
   onStartReview,
+  onInspectNode,
 }: NodeSelectionSceneProps) {
-  const selectedCount = nodes.filter((node) => node.selected).length;
-
   return (
     <motion.section
       className="node-selection-scene pointer-events-none absolute inset-0 z-[78]"
@@ -31,7 +31,7 @@ export default function NodeSelectionScene({
       transition={{ duration: 0.24, ease: 'easeOut' }}
     >
       <div className="node-selection-scene__wash absolute inset-0" aria-hidden="true" />
-      <SelectionStatusBar isComplete={isComplete} selectedCount={selectedCount} />
+      <SelectionStatusBar isComplete={isComplete} />
 
       <div className="absolute inset-0" role="list" aria-label="Review node candidates">
         {nodes.map((node, index) => (
@@ -40,15 +40,26 @@ export default function NodeSelectionScene({
             node={node}
             index={index}
             isComplete={isComplete}
+            decorateOnly
+            onClick={onInspectNode}
           />
         ))}
       </div>
 
-      <div
-        className={`pointer-events-auto absolute left-1/2 z-[87] flex -translate-x-1/2 items-center justify-center gap-3 ${
-          isComplete ? 'node-selection-controls--status' : 'bottom-8'
-        }`}
-      >
+      {isComplete && (
+        <motion.div
+          className="node-selection-detail-bubble pointer-events-none absolute left-1/2 top-[56%] z-[92] -translate-x-1/2"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: [0.82, 1, 0.82], y: [4, 0, 4] }}
+          transition={{ duration: 1.25, repeat: Infinity, ease: 'easeInOut' }}
+        >
+          Click a reviewer for details
+        </motion.div>
+      )}
+
+      <div className={`pointer-events-auto absolute left-1/2 z-[96] flex -translate-x-1/2 items-center justify-center gap-3 ${
+        isComplete ? 'top-[14.25rem]' : 'bottom-8'
+      }`}>
         {!isComplete ? (
           <button
             type="button"

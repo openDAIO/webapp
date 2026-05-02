@@ -99,5 +99,5 @@ function buildMockNodeResponse(node: NodeEvaluationResult, rawQuestion: string) 
       : `I was not slashed. The redistribution rewarded nodes like me that stayed inside the accepted range, so my net token flow was ${tokenFlow >= 0 ? '+' : ''}${tokenFlow.toFixed(1)} TOK.`;
   }
 
-  return `${node.finalReasoning} My final score was ${node.finalScore}, trust moved from ${node.trustBefore} to ${node.trustAfter}, and ${outcome}`;
+  return `${node.finalReasoning} My final score was ${node.finalScore}, reputation moved from ${node.reputationBefore} to ${node.reputationAfter}, and ${outcome}`;
 }

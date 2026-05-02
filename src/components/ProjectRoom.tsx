@@ -5,19 +5,20 @@ interface ProjectRoomProps {
   label: string;
   position: string;
   imageUrl?: string;
+  inactive?: boolean;
 }
 
-const ProjectRoom: React.FC<ProjectRoomProps> = ({ label, position, imageUrl }) => {
+const ProjectRoom: React.FC<ProjectRoomProps> = ({ label, position, imageUrl, inactive = false }) => {
   const [imgError, setImgError] = useState(false);
 
   return (
-    <div className={`absolute -translate-x-1/2 -translate-y-1/2 w-60 h-60 flex flex-col items-center justify-center z-10 ${position}`}>
+    <div className={`project-room absolute -translate-x-1/2 -translate-y-1/2 w-60 h-60 flex flex-col items-center justify-center z-10 ${inactive ? 'project-room--inactive' : ''} ${position}`}>
       <div className="relative w-full h-full flex items-center justify-center group overflow-visible">
         {imageUrl && !imgError ? (
           <img 
             src={imageUrl} 
             alt={label} 
-            className="h-[172px] w-auto max-w-none object-contain pixelated drop-shadow-[8px_8px_0_rgba(38,33,29,0.28)]"
+            className="project-room__image h-[172px] w-auto max-w-none object-contain pixelated drop-shadow-[8px_8px_0_rgba(38,33,29,0.28)]"
             onError={() => setImgError(true)}
             referrerPolicy="no-referrer"
           />

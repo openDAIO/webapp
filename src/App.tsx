@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, DoorOpen, FileDown, LayoutDashboard } from 'lucide-react';
-import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeEvaluationResult, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
+import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeEvaluationResult, ReviewGamePhase, ReviewRoundState, ReviewerNode, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
 import { buildAICharactersForRoom } from './data/mockCharacters';
 import { MOCK_FINAL_RESULT_INPUTS } from './data/mockFinalResults';
 import { buildNodeResultRows, type NodeEvaluationInput } from './utils/finalResults';
@@ -15,8 +15,7 @@ import { useNodeChat } from './hooks/useNodeChat';
 import Character from './components/Character';
 import ReviewBountyGateOverlay, { type ConfirmedReviewBounty } from './components/ReviewBountyGateOverlay';
 import LogPanel from './components/LogPanel';
-import TrustScorePanel from './components/TrustScorePanel';
-import Billboard from './components/Billboard';
+import ReputationScorePanel from './components/ReputationScorePanel';
 import ConferenceHall from './components/ConferenceHall';
 import ProjectRoom from './components/ProjectRoom';
 import Navbar from './components/Navbar';
@@ -27,6 +26,9 @@ import NodeSelectionScene from './components/NodeSelectionScene';
 import NodeDetailDrawer from './components/NodeDetailDrawer';
 import ConversationDrawer, { type ConversationDrawerData } from './components/ConversationDrawer';
 import ThinkingDrawer from './components/ThinkingDrawer';
+import Billboard from './components/Billboard';
+import ReviewerSidePanel from './components/ReviewerSidePanel';
+import AuditQuorumTracker from './components/AuditQuorumTracker';
 import { PixelFrameChrome } from './components/PixelFrame';
 import { ActiveReviewRoomId, REVIEW_ROOMS } from './components/RoomSelectionPanel';
 import { getRoomConfig, getCharacterTarget, type RoomConfigEntry } from './constants/roomConfig';
@@ -38,6 +40,16 @@ import {
   getSelectedReviewNodes,
   selectReviewNodes,
 } from './utils/nodeSelection';
+import { AUDIT_QUORUM, createReviewRoundState } from './utils/reviewScoring';
+import {
+  CHARACTER_BASE_MOVE_DURATION_MS,
+  FINAL_RESULT_EXPAND_DELAY_MS,
+  ROUND_INTRO_DURATION_MS,
+  ROUND_MOVEMENT_SETTLE_MS,
+  ROUND_RESULT_HOLD_MS,
+  ROUND_THREE_RESULT_HOLD_MS,
+  roundProcessDurationMs,
+} from './constants/reviewFlowTiming';
 
 type AppPage = 'dashboard' | 'commons' | 'loading' | 'room';
 
@@ -313,11 +325,11 @@ function buildEvaluationReport({
     '',
     '## Node Results',
     '',
-    '| Node | Final Score | Status | Trust | Stake | Bounty | Stake Change |',
+    '| Node | Final Score | Status | Reputation | Stake | Bounty | Stake Change |',
     '| --- | ---: | --- | ---: | ---: | ---: | ---: |',
     ...nodes.map((node) => {
       const stakeChange = node.rewardAmount - node.slashAmount;
-      return `| ${node.name} | ${node.finalScore} | ${node.status} | ${node.trustBefore} -> ${node.trustAfter} | ${formatReportAmount(node.stakeAmount, 1)} TOK | ${formatReportAmount(node.bountyRewardAmount, 2)} ${summary.bountyAsset} | ${formatReportAmount(stakeChange, 1)} TOK |`;
+      return `| ${node.name} | ${node.finalScore} | ${node.status} | ${node.reputationBefore} -> ${node.reputationAfter} | ${formatReportAmount(node.stakeAmount, 1)} TOK | ${formatReportAmount(node.bountyRewardAmount, 2)} ${summary.bountyAsset} | ${formatReportAmount(stakeChange, 1)} TOK |`;
     }),
     '',
     '## Node Review History',
@@ -390,6 +402,76 @@ function buildRoundScore(char: AICharacter, round: number, conversation?: Conver
   };
 }
 
+function scoreScaleToChart(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value / 100)));
+}
+
+function buildProtocolRoundScore(
+  char: AICharacter,
+  reviewer: ReviewerNode,
+  reviewState: ReviewRoundState,
+  round: number,
+): RoundScore {
+  if (round === 1) {
+    const score = scoreScaleToChart(reviewer.round0?.weightedScore ?? reviewer.proposalScore);
+
+    return {
+      round,
+      score,
+      reasoning: `${char.name} submitted proposalScore ${reviewer.proposalScore}/10000 as an independent review.`,
+      discussion: 'Independent proposal review. All selected reviewers have reviewerWeight 10000.',
+      changeReason: 'Round 1 consensus uses the median of individual proposal scores.',
+    };
+  }
+
+  if (round === 2) {
+    const score = scoreScaleToChart(reviewer.round1?.weightedScore ?? reviewer.proposalScore);
+    const incomingCount = reviewer.round1?.incomingAuditScores.length ?? 0;
+
+    return {
+      round,
+      score,
+      reasoning: `${char.name} received auditScore ${reviewer.round1?.auditScore ?? 0}/10000 and reliability ${reviewer.round1?.reliability ?? 0}/10000.`,
+      discussion: `Peer audit quorum accepted ${reviewState.acceptedAuditCount}/${reviewState.auditQuorum} first-arriving audits. Self-audits were excluded.`,
+      changeReason: `Audit contribution was calculated from ${incomingCount} incoming audit score${incomingCount === 1 ? '' : 's'} and outgoing audit reliability.`,
+      discussedWith: reviewState.reviewers.filter((peer) => peer.id !== reviewer.id).map((peer) => peer.name),
+    };
+  }
+
+  const score = scoreScaleToChart(reviewer.round2?.weightedScore ?? reviewer.proposalScore);
+
+  return {
+    round,
+    score,
+    reasoning: `${char.name} applied finalWeight ${reviewer.round2?.finalWeight ?? 0}/10000 after reputationScore ${reviewer.round2?.reputationScore ?? 0}/10000.`,
+    discussion: reviewer.reputation?.sampleCount === 0
+      ? 'No prior samples: the current node reputation baseline was applied before final weighted median.'
+      : 'Long-term reputation components adjusted the audit-based reviewer weight.',
+    changeReason: 'Round 3 consensus uses finalWeight based weighted median.',
+  };
+}
+
+function reviewGamePhaseFromSimulation(phase: SimulationPhase): ReviewGamePhase {
+  switch (phase) {
+    case 'SELECTION':
+      return 'selection';
+    case 'MOVING_TO_ROOMS':
+    case 'ROUND_1':
+      return 'round1';
+    case 'ROUND_2_STARTING':
+    case 'ROUND_2':
+      return 'round2';
+    case 'ROUND_3_STARTING':
+    case 'ROUND_3':
+    case 'FINALIZING':
+      return 'round3';
+    case 'EVALUATED':
+      return 'final';
+    default:
+      return 'selection';
+  }
+}
+
 function buildRoomRoundHistory(char: AICharacter, finalScore: number): RoundEvaluationHistory[] {
   const roundHistory: RoundEvaluationHistory[] = char.scoreHistory.map((entry) => ({
     round: entry.round,
@@ -438,7 +520,7 @@ function buildRoomFinalInputs(characters: AICharacter[]): NodeEvaluationInput[] 
       name: character.name,
       avatar: character.avatar ?? ASSET_PATHS.characters.reviewers[character.id]?.portrait,
       finalScore,
-      trustBefore: character.trustScore,
+      reputationBefore: character.reputationScore,
       stakeAmount: character.stakeAmount,
       roundHistory: character.scoreHistory.length > 0
         ? buildRoomRoundHistory(character, finalScore)
@@ -547,6 +629,31 @@ function hallwayDiscussionPosition(pairIndex: number, participantIndex: number) 
   return clusters[(pairIndex * 2 + participantIndex) % clusters.length];
 }
 
+function reviewTablePosition(index: number) {
+  const seats: Coordinates[] = [
+    { x: 50, y: 58, offsetX: -58, offsetY: 4 },
+    { x: 50, y: 58, offsetX: 0, offsetY: -22 },
+    { x: 50, y: 58, offsetX: 58, offsetY: 4 },
+  ];
+
+  return seats[index % seats.length];
+}
+
+function emptyRoomMeetingPosition(index: number, reviewRoomId: ActiveReviewRoomId) {
+  const emptyRoom = REVIEW_ROOM_SCENES[reviewRoomId].rooms.find((room) => !room.reviewerId);
+  if (!emptyRoom) return reviewTablePosition(index);
+
+  const base = getCharacterTarget(emptyRoom.id, reviewRoomId);
+  const offsets = [
+    { x: -34, y: 8 },
+    { x: 0, y: -20 },
+    { x: 34, y: 8 },
+  ];
+  const offset = offsets[index % offsets.length];
+
+  return withPositionOffset(base, offset.x, offset.y);
+}
+
 function positionsMatch(first: Coordinates, second: Coordinates) {
   return first.x === second.x
     && first.y === second.y
@@ -555,7 +662,76 @@ function positionsMatch(first: Coordinates, second: Coordinates) {
 }
 
 function movementDurationMs(character: AICharacter, nextPosition: Coordinates) {
-  return positionsMatch(character.position, nextPosition) ? 0 : (1.5 / character.speed) * 1000;
+  return positionsMatch(character.position, nextPosition) ? 0 : CHARACTER_BASE_MOVE_DURATION_MS / character.speed;
+}
+
+function ReputationWeightingPanel({ state }: { state: ReviewRoundState }) {
+  return (
+    <section className="review-room-activity-panel pixel-box warm-panel relative overflow-hidden p-3 text-[#202528]">
+      <PixelFrameChrome round={2} />
+      <div className="relative z-30">
+        <div className="flex items-start justify-between gap-3 border-b-2 border-[#d7b98f] pb-2">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-[#2f5d7e]">Reputation Weighting</div>
+            <p className="mt-1 text-[10px] leading-snug text-[#6b563f]">
+              Round 2 weight x reputation = final weight.
+            </p>
+          </div>
+          <div className="border-2 border-[#d7b98f] bg-[#fffef3] px-2 py-1 text-right">
+            <div className="text-[8px] font-bold uppercase text-[#8c745b]">Consensus</div>
+            <div className="font-mono text-sm font-bold text-[#2f5d7e]">
+              {formatProtocolValue(state.round2ConsensusScore)}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 space-y-2">
+          {state.reviewers.map((reviewer) => (
+            <div key={reviewer.id} className="border-2 border-[#d7b98f] bg-[#fffef3] px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] font-bold text-[#503521]">{reviewer.name}</span>
+                {reviewer.reputation?.sampleCount === 0 && (
+                  <span className="shrink-0 border border-[#e5b45f] bg-[#fff8e6] px-1.5 py-0.5 text-[8px] font-bold uppercase text-[#6b563f]">
+                    New
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 grid grid-cols-3 gap-1 text-[8px] uppercase tracking-wider text-[#8c745b]">
+                <ProtocolMiniStat label="R2 Wt" value={reviewer.round2?.round1Weight} />
+                <ProtocolMiniStat label="Reputation" value={reviewer.round2?.reputationScore} />
+                <ProtocolMiniStat label="Final" value={reviewer.round2?.finalWeight} />
+              </div>
+              <div className="mt-2 h-2 border border-[#d7b98f] bg-[#ead9b1]">
+                <div
+                  className="h-full bg-[#2f5d7e]"
+                  style={{ width: `${Math.max(0, Math.min(100, (reviewer.round2?.finalWeight ?? 0) / 100))}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProtocolMiniStat({ label, value }: { label: string; value?: number }) {
+  return (
+    <span className="min-w-0 border border-[#d7b98f] bg-[#fff8e6] px-1 py-1">
+      <span className="block truncate">{label}</span>
+      <strong className="block truncate font-mono text-[10px] text-[#2f5d7e]">{formatProtocolValue(value)}</strong>
+    </span>
+  );
+}
+
+function formatProtocolValue(value?: number) {
+  return typeof value === 'number' ? value.toLocaleString() : '--';
+}
+
+function roundIntroSubtitle(round: 1 | 2 | 3) {
+  if (round === 1) return 'Individual Review';
+  if (round === 2) return 'Peer Audit';
+  return 'Reputation Weighted';
 }
 
 export default function App() {
@@ -580,23 +756,27 @@ export default function App() {
   const [confirmArmed, setConfirmArmed] = useState(false);
   const [roundIntro, setRoundIntro] = useState<{ round: 1 | 2 | 3; id: number } | null>(null);
   const [roundResultHoldRound, setRoundResultHoldRound] = useState<1 | 2 | 3 | null>(null);
+  const [roundProcessStartDelayMs, setRoundProcessStartDelayMs] = useState(0);
   const [isNodeSelectionReady, setIsNodeSelectionReady] = useState(false);
+  const [reviewRoundState, setReviewRoundState] = useState<ReviewRoundState | null>(null);
   const nodeChat = useNodeChat(evaluationId);
   const charactersRef = useRef(characters);
+  const reviewRoundStateRef = useRef<ReviewRoundState | null>(reviewRoundState);
   const activeConversationsRef = useRef(activeConversations);
+  const selectedNodeIdRef = useRef(selectedNodeId);
   const selectedConversationIdRef = useRef(selectedConversationId);
   const selectedThinkingNodeIdRef = useRef(selectedThinkingNodeId);
   const meetingTimersRef = useRef<number[]>([]);
   const sideboardActivityRef = useRef<HTMLDivElement | null>(null);
   const selectionCompletionLoggedRef = useRef(false);
 
-  const selectedNodeResult = useMemo(
-    () => finalResult?.nodes.find((node) => node.id === selectedNodeId) ?? null,
-    [finalResult, selectedNodeId],
-  );
   const selectedConversation = useMemo(
     () => activeConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [activeConversations, selectedConversationId],
+  );
+  const selectedNodeResult = useMemo(
+    () => finalResult?.nodes.find((node) => node.id === selectedNodeId) ?? null,
+    [finalResult, selectedNodeId],
   );
   const activeRoomConfig = useMemo(() => getRoomConfig(selectedRoom), [selectedRoom]);
   const activeRoomScene = REVIEW_ROOM_SCENES[selectedRoom];
@@ -605,21 +785,60 @@ export default function App() {
     [loadingRoom],
   );
   const reviewParticipants = useMemo(() => getReviewParticipants(characters), [characters]);
-  const sceneCharacters = phase === 'IDLE' || phase === 'SELECTION' ? characters : reviewParticipants;
-  const sideboardCharacters = phase === 'IDLE' || phase === 'SELECTION' ? characters : reviewParticipants;
+  const sceneCharacters = phase === 'IDLE' || phase === 'SELECTION' || phase === 'MOVING_TO_ROOMS' ? characters : reviewParticipants;
+  const sideboardCharacters = characters;
   const selectedThinkingNode = useMemo(
     () => reviewParticipants.find((character) => character.id === selectedThinkingNodeId && character.status === 'THINKING') ?? null,
     [reviewParticipants, selectedThinkingNodeId],
   );
   const isEvaluationInProgress = phase !== 'IDLE' || Boolean(roomReviewBounty) || Boolean(finalResult);
+  const activeReviewRoundState = useMemo(
+    () => reviewRoundState ? { ...reviewRoundState, phase: reviewGamePhaseFromSimulation(phase) } : null,
+    [phase, reviewRoundState],
+  );
+  const selectedReviewerNode = useMemo(
+    () => activeReviewRoundState?.reviewers.find((reviewer) => reviewer.id === selectedNodeId) ?? null,
+    [activeReviewRoundState, selectedNodeId],
+  );
+  const selectedReviewerCharacter = useMemo(
+    () => reviewParticipants.find((character) => character.id === selectedNodeId) ?? null,
+    [reviewParticipants, selectedNodeId],
+  );
+  const selectedReviewerRoundCompleted = useMemo(() => {
+    if (!selectedReviewerCharacter || !activeReviewRoundState) return false;
+    const roundForPhase = activeReviewRoundState.phase === 'round1'
+      ? 1
+      : activeReviewRoundState.phase === 'round2'
+        ? 2
+        : activeReviewRoundState.phase === 'round3' || activeReviewRoundState.phase === 'final'
+          ? 3
+          : 0;
+    return roundForPhase === 0 || selectedReviewerCharacter.scoreHistory.some((entry) => entry.round === roundForPhase);
+  }, [activeReviewRoundState, selectedReviewerCharacter]);
+  const selectedReviewerIdsForRooms = useMemo(
+    () => new Set(activeReviewRoundState?.selectedReviewerIds ?? []),
+    [activeReviewRoundState?.selectedReviewerIds],
+  );
+  const shouldDimInactiveLabs = Boolean(activeReviewRoundState)
+    && phase !== 'IDLE'
+    && phase !== 'SELECTION'
+    && phase !== 'MOVING_TO_ROOMS';
 
   useEffect(() => {
     charactersRef.current = characters;
   }, [characters]);
 
   useEffect(() => {
+    reviewRoundStateRef.current = reviewRoundState;
+  }, [reviewRoundState]);
+
+  useEffect(() => {
     activeConversationsRef.current = activeConversations;
   }, [activeConversations]);
+
+  useEffect(() => {
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId]);
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -657,6 +876,16 @@ export default function App() {
     }
   }, [phase]);
 
+  useEffect(() => {
+    if (phase === 'SELECTION') return;
+    if (phase === 'EVALUATED') return;
+
+    setSelectedNodeId((current) => {
+      if (!current) return current;
+      return reviewRoundStateRef.current?.reviewers.some((reviewer) => reviewer.id === current) ? current : null;
+    });
+  }, [phase]);
+
   const clearMeetingTimers = useCallback(() => {
     meetingTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     meetingTimersRef.current = [];
@@ -677,6 +906,48 @@ export default function App() {
     ].slice(0, 50));
   }, [clearMeetingTimers]);
 
+  const continueAfterRoundResult = useCallback((holdRound: 1 | 2 | 3) => {
+    setSelectedNodeId(null);
+    setRoundResultHoldRound(null);
+    setRoundProcessStartDelayMs(0);
+
+    if (holdRound === 1) {
+      setCurrentRound(2);
+      setRoundIntro({ round: 2, id: Date.now() });
+      setPhase('ROUND_2_STARTING');
+      return;
+    }
+
+    if (holdRound === 2) {
+      setCurrentRound(3);
+      setRoundIntro({ round: 3, id: Date.now() });
+      setPhase('ROUND_3_STARTING');
+      return;
+    }
+
+    const finalCharacters = getReviewParticipants(charactersRef.current);
+    const finalPositionById = new Map(finalCharacters.map((character) => [character.id, character.idlePosition]));
+    const moveDuration = Math.max(
+      0,
+      ...finalCharacters.map((character) => {
+        const targetPosition = finalPositionById.get(character.id);
+        return targetPosition ? movementDurationMs(character, targetPosition) : 0;
+      }),
+    );
+    setRoundProcessStartDelayMs(moveDuration + ROUND_MOVEMENT_SETTLE_MS);
+    setPhase('FINALIZING');
+    addLog('Final round complete. Nodes are returning to their starting positions for the result.');
+    setCharacters((prev) =>
+      prev.map((character) => ({
+        ...character,
+        status: finalPositionById.has(character.id) && !positionsMatch(character.position, finalPositionById.get(character.id) ?? character.idlePosition)
+          ? 'RETURNING'
+          : 'IDLE',
+        position: finalPositionById.get(character.id) ?? character.idlePosition,
+      })),
+    );
+  }, [addLog]);
+
   const resetCycle = useCallback((roomId: ActiveReviewRoomId = selectedRoom) => {
     setPhase('IDLE');
     setCurrentRound(1);
@@ -690,9 +961,11 @@ export default function App() {
     setMetConversationIds([]);
     setShowChart(false);
     setFinalResult(null);
+    setReviewRoundState(null);
     setConfirmArmed(false);
     setRoundIntro(null);
     setRoundResultHoldRound(null);
+    setRoundProcessStartDelayMs(0);
     setIsNodeSelectionReady(false);
     selectionCompletionLoggedRef.current = false;
     setCharacters(buildAICharactersForRoom(roomId).map(resetCharacter));
@@ -705,6 +978,7 @@ export default function App() {
         setSelectedConversationId(null);
         setSelectedThinkingNodeId(null);
         setPendingDiscussionAdvanceRound(null);
+        setRoundProcessStartDelayMs(0);
         setPage('room');
       }
       return;
@@ -724,6 +998,7 @@ export default function App() {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     setPage('room');
     addLog(`${REVIEW_ROOMS[loadingRoom].title} is ready.`);
   }, [addLog, loadingRoom, resetCycle]);
@@ -733,6 +1008,7 @@ export default function App() {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     setConfirmArmed(false);
     clearMeetingTimers();
     clearRoundResultHoldTimer();
@@ -745,6 +1021,7 @@ export default function App() {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     setConfirmArmed(false);
     clearMeetingTimers();
     clearRoundResultHoldTimer();
@@ -758,6 +1035,7 @@ export default function App() {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     setConfirmArmed(false);
     clearMeetingTimers();
     clearRoundResultHoldTimer();
@@ -773,6 +1051,7 @@ export default function App() {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     setPage('commons');
     addLog('Review results confirmed. Evaluation closed.');
   };
@@ -839,10 +1118,12 @@ export default function App() {
     if (phase !== 'SELECTION' || !isNodeSelectionReady) return;
 
     const participants = getReviewParticipants(charactersRef.current);
+    setSelectedNodeId(null);
     setPhase('MOVING_TO_ROOMS');
     setCurrentRound(1);
     setRoundIntro({ round: 1, id: Date.now() });
     setRoundResultHoldRound(null);
+    setRoundProcessStartDelayMs(0);
     addLog(`Round 1 queued for ${participants.length} selected review nodes.`);
   }, [addLog, isNodeSelectionReady, phase]);
 
@@ -851,6 +1132,13 @@ export default function App() {
       charactersRef.current.map(resetCharacter),
       DEFAULT_SELECTED_NODE_COUNT,
     );
+    const selectedCharacters = getSelectedReviewNodes(nextCharacters);
+    const reviewCharacters = (
+      selectedCharacters.length === DEFAULT_SELECTED_NODE_COUNT
+        ? selectedCharacters
+        : getReviewParticipants(nextCharacters).slice(0, DEFAULT_SELECTED_NODE_COUNT)
+    );
+    const nextReviewRoundState = createReviewRoundState(reviewCharacters);
 
     setEvaluationId(`eval_${Date.now()}`);
     setPhase('SELECTION');
@@ -861,11 +1149,13 @@ export default function App() {
     setRoundResultHoldRound(null);
     setShowChart(false);
     setFinalResult(null);
+    setReviewRoundState(nextReviewRoundState);
     setConfirmArmed(false);
     setSelectedNodeId(null);
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
+    setRoundProcessStartDelayMs(0);
     clearMeetingTimers();
     clearRoundResultHoldTimer();
     setMetConversationIds([]);
@@ -880,15 +1170,18 @@ export default function App() {
     addLog(`Selecting ${DEFAULT_SELECTED_NODE_COUNT} review nodes from ${nextCharacters.length} candidates.`);
 
     charactersRef.current = nextCharacters;
+    reviewRoundStateRef.current = nextReviewRoundState;
     setCharacters(nextCharacters);
   };
 
   const applyRoundScores = useCallback((round: number) => {
     const roundConversations = activeConversationsRef.current.filter((conversation) => conversation.round === round);
+    const protocolState = reviewRoundStateRef.current;
+    const protocolReviewerById = new Map(protocolState?.reviewers.map((reviewer) => [reviewer.id, reviewer]) ?? []);
     setCharacters((prev) => {
       const participantIds = new Set(getReviewParticipants(prev).map((character) => character.id));
 
-      return prev.map((character) => {
+      const nextCharacters: AICharacter[] = prev.map((character): AICharacter => {
         if (!participantIds.has(character.id)) {
           return {
             ...character,
@@ -898,7 +1191,10 @@ export default function App() {
         }
 
         const conversation = findConversationForNode(roundConversations, character.id);
-        const entry = buildRoundScore(character, round, conversation);
+        const protocolReviewer = protocolReviewerById.get(character.id);
+        const entry = protocolState && protocolReviewer
+          ? buildProtocolRoundScore(character, protocolReviewer, protocolState, round)
+          : buildRoundScore(character, round, conversation);
 
         return {
           ...character,
@@ -909,6 +1205,9 @@ export default function App() {
           discussionSummary: entry.discussion,
         };
       });
+
+      charactersRef.current = nextCharacters;
+      return nextCharacters;
     });
     addLog(`Round ${round} scores submitted to the board.`);
   }, [addLog]);
@@ -916,8 +1215,30 @@ export default function App() {
   const finalizeScores = useCallback(() => {
     const activeCharacters = getReviewParticipants(charactersRef.current);
     const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
+    const finalPositionById = new Map(activeCharacters.map((character) => [character.id, character.idlePosition]));
     const roomFinalInputs = buildRoomFinalInputs(activeCharacters);
+    const protocolState = reviewRoundStateRef.current;
+    const protocolReviewerById = new Map(protocolState?.reviewers.map((reviewer) => [reviewer.id, reviewer]) ?? []);
     const calculated = buildNodeResultRows(roomFinalInputs, undefined, roomReviewBounty?.amount ?? 0);
+
+    if (protocolState?.round2ConsensusScore !== undefined) {
+      const finalConsensusForChart = scoreScaleToChart(protocolState.round2ConsensusScore);
+      calculated.summary.finalAverage = finalConsensusForChart;
+      calculated.summary.outlierThresholdLow = finalConsensusForChart - calculated.summary.standardDeviation;
+      calculated.summary.outlierThresholdHigh = finalConsensusForChart + calculated.summary.standardDeviation;
+      calculated.nodes = calculated.nodes.map((node) => {
+        const reviewNode = protocolReviewerById.get(node.id);
+        if (!reviewNode) return node;
+
+        return {
+          ...node,
+          finalScore: scoreScaleToChart(reviewNode.round2?.weightedScore ?? node.finalScore * 100),
+          finalReasoning: `${node.name} contributed proposalScore ${reviewNode.proposalScore}/10000 with finalWeight ${reviewNode.round2?.finalWeight ?? 0}/10000. Final consensus is ${protocolState.round2ConsensusScore}/10000 (${finalConsensusForChart}/100).`,
+          reviewNode,
+        };
+      });
+    }
+
     setFinalResult(calculated);
 
     setCharacters((prev) =>
@@ -944,11 +1265,11 @@ export default function App() {
         return {
           ...character,
           status: result.isOutlier ? 'SLASHED' : 'REWARDED',
-          position: character.idlePosition,
+          position: finalPositionById.get(character.id) ?? character.idlePosition,
           isOutlier: result.isOutlier,
           lastScore: result.finalScore,
           stakeAmount: result.stakeAmount + result.rewardAmount - result.slashAmount,
-          trustScore: result.trustAfter,
+          reputationScore: result.reputationAfter,
         };
       }),
     );
@@ -958,13 +1279,19 @@ export default function App() {
     addLog(`Final scores computed for ${roomFinalInputs.length} room nodes. Review bounty, slashing, and node rewards updated.`);
   }, [addLog, roomReviewBounty]);
 
-  const inspectNode = (node: NodeEvaluationResult) => {
-    setSelectedNodeId(node.id);
+  const inspectReviewer = (reviewerId: string) => {
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
+    setSelectedNodeId(reviewerId);
   };
 
   const inspectSceneNode = (nodeId: string) => {
+    const protocolReviewer = reviewRoundStateRef.current?.reviewers.find((reviewer) => reviewer.id === nodeId);
+    if (protocolReviewer) {
+      inspectReviewer(nodeId);
+      return;
+    }
+
     if (finalResult) {
       const node = finalResult.nodes.find((result) => result.id === nodeId);
       setSelectedNodeId(node?.id ?? null);
@@ -998,52 +1325,38 @@ export default function App() {
   const startDiscussionRound = useCallback((round: 2 | 3) => {
     const activeCharacters = getReviewParticipants(charactersRef.current);
     const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
-    const plan = buildDiscussionPlan(activeCharacters, round);
-    const currentCharactersById = new Map<string, AICharacter>(activeCharacters.map((character) => [character.id, character]));
-    const nextPositionsById = new Map<string, Coordinates>();
-
-    activeCharacters.forEach((character) => {
-      const pairIndex = plan.conversations.findIndex((conversation) => conversation.participantIds.includes(character.id));
-      const conversation = pairIndex >= 0 ? plan.conversations[pairIndex] : undefined;
-      const participantIndex = conversation?.participantIds.indexOf(character.id) ?? -1;
-
-      nextPositionsById.set(
-        character.id,
-        conversation && participantIndex >= 0
-          ? round === 2
-            ? roomDiscussionPosition(character, conversation, participantIndex, selectedRoom)
-            : hallwayDiscussionPosition(pairIndex, participantIndex)
-          : getCharacterTarget(character.id, selectedRoom),
-      );
-    });
+    const targetPositionById = new Map(activeCharacters.map((character, index) => [
+      character.id,
+      round === 2 ? emptyRoomMeetingPosition(index, selectedRoom) : character.idlePosition,
+    ]));
+    const protocolState = reviewRoundStateRef.current;
 
     clearMeetingTimers();
     setSelectedConversationId(null);
     setSelectedThinkingNodeId(null);
-    setActiveConversations(plan.conversations);
+    setActiveConversations([]);
     setMetConversationIds([]);
-    addLog(`Round ${round} discussion plan started: ${plan.conversations.length} paired conversations${plan.idleNodeName ? `, ${plan.idleNodeName} reviews locally this round` : ''}.`);
-    plan.conversations.forEach((conversation) => {
-      addLog(`Round ${round}: ${conversation.participantNames[0]} talked with ${conversation.participantNames[1]} at ${conversation.locationLabel}.`);
-    });
-    if (plan.idleNodeName) {
-      addLog(`Round ${round}: ${plan.idleNodeName} had no partner because of the odd node count and is prioritized for the next rotation.`);
+
+    if (round === 2) {
+      const acceptedAudits = protocolState?.audits.filter((audit) => audit.status === 'accepted').sort((a, b) => a.arrivalOrder - b.arrivalOrder) ?? [];
+      addLog(`Round 2 peer audit started. Audit quorum is ${acceptedAudits.length}/${protocolState?.auditQuorum ?? 4}.`);
+      acceptedAudits.forEach((audit) => {
+        const fromName = protocolState?.reviewers.find((reviewer) => reviewer.id === audit.fromReviewerId)?.name ?? audit.fromReviewerId;
+        const toName = protocolState?.reviewers.find((reviewer) => reviewer.id === audit.toReviewerId)?.name ?? audit.toReviewerId;
+        addLog(`Audit #${audit.arrivalOrder} accepted: ${fromName} audited ${toName} with ${audit.score}/10000.`);
+      });
+    } else {
+      addLog('Round 3 reputation weighting started. Nodes return to their starting table seats before the final weighted review.');
     }
 
-    plan.conversations.forEach((conversation) => {
-      const meetingDelay = Math.max(
-        ...conversation.participantIds.map((nodeId) => {
-          const character = currentCharactersById.get(nodeId);
-          const nextPosition = nextPositionsById.get(nodeId);
-          return character && nextPosition ? movementDurationMs(character, nextPosition) : 0;
-        }),
-      );
-
-      const timer = window.setTimeout(() => {
-        setMetConversationIds((prev) => prev.includes(conversation.id) ? prev : [...prev, conversation.id]);
-      }, meetingDelay + 80);
-      meetingTimersRef.current.push(timer);
-    });
+    const moveDuration = Math.max(
+      0,
+      ...activeCharacters.map((character) => {
+        const targetPosition = targetPositionById.get(character.id);
+        return targetPosition ? movementDurationMs(character, targetPosition) : 0;
+      }),
+    );
+    setRoundProcessStartDelayMs(moveDuration + ROUND_MOVEMENT_SETTLE_MS);
 
     setCharacters((prev) =>
       prev.map((character) => {
@@ -1055,25 +1368,25 @@ export default function App() {
           };
         }
 
-        const pairIndex = plan.conversations.findIndex((conversation) => conversation.participantIds.includes(character.id));
-        const conversation = pairIndex >= 0 ? plan.conversations[pairIndex] : undefined;
-        const participantIndex = conversation?.participantIds.indexOf(character.id) ?? -1;
-
-        if (!conversation || participantIndex < 0) {
-          return {
-            ...character,
-            status: 'THINKING',
-            position: getCharacterTarget(character.id, selectedRoom),
-          };
-        }
-
         return {
           ...character,
           status: 'DISCUSSING',
-          position: nextPositionsById.get(character.id) ?? character.position,
+          position: targetPositionById.get(character.id) ?? character.position,
         };
       }),
     );
+
+    if (round === 3) {
+      const timer = window.setTimeout(() => {
+        setCharacters((prev) => {
+          const participantIds = new Set(getReviewParticipants(prev).map((character) => character.id));
+          return prev.map((character) => participantIds.has(character.id)
+            ? { ...character, status: 'THINKING' }
+            : character);
+        });
+      }, moveDuration + ROUND_MOVEMENT_SETTLE_MS);
+      meetingTimersRef.current.push(timer);
+    }
   }, [addLog, clearMeetingTimers, selectedRoom]);
 
   const advanceFromRound2 = useCallback(() => {
@@ -1101,7 +1414,7 @@ export default function App() {
   }, [applyRoundScores, clearMeetingTimers, clearRoundResultHoldTimer]);
 
   useEffect(() => {
-    if (selectedConversationId || selectedThinkingNodeId || pendingDiscussionAdvanceRound === null) return;
+    if (selectedNodeId || selectedConversationId || selectedThinkingNodeId || pendingDiscussionAdvanceRound === null) return;
     if (pendingDiscussionAdvanceRound === 1 && phase === 'ROUND_1') {
       setPendingDiscussionAdvanceRound(null);
       applyRoundScores(1);
@@ -1110,42 +1423,17 @@ export default function App() {
     }
     if (pendingDiscussionAdvanceRound === 2 && phase === 'ROUND_2') advanceFromRound2();
     if (pendingDiscussionAdvanceRound === 3 && phase === 'ROUND_3') advanceFromRound3();
-  }, [advanceFromRound2, advanceFromRound3, applyRoundScores, pendingDiscussionAdvanceRound, phase, selectedConversationId, selectedThinkingNodeId]);
+  }, [advanceFromRound2, advanceFromRound3, applyRoundScores, pendingDiscussionAdvanceRound, phase, selectedConversationId, selectedNodeId, selectedThinkingNodeId]);
 
   useEffect(() => {
-    if (roundResultHoldRound === null) return undefined;
+    if (roundResultHoldRound === null || selectedNodeId || selectedConversationId || selectedThinkingNodeId) return undefined;
 
-    const holdRound = roundResultHoldRound;
     const timer = window.setTimeout(() => {
-      setRoundResultHoldRound((current) => current === holdRound ? null : current);
-
-      if (holdRound === 1) {
-        setCurrentRound(2);
-        setRoundIntro({ round: 2, id: Date.now() });
-        setPhase('ROUND_2_STARTING');
-        return;
-      }
-
-      if (holdRound === 2) {
-        setCurrentRound(3);
-        setRoundIntro({ round: 3, id: Date.now() });
-        setPhase('ROUND_3_STARTING');
-        return;
-      }
-
-      setPhase('FINALIZING');
-      addLog('Final round complete. Nodes are returning to their original seats.');
-      setCharacters((prev) =>
-        prev.map((character) => ({
-          ...character,
-          status: 'RETURNING',
-          position: character.idlePosition,
-        })),
-      );
-    }, 3000);
+      continueAfterRoundResult(roundResultHoldRound);
+    }, roundResultHoldRound === 3 ? ROUND_THREE_RESULT_HOLD_MS : ROUND_RESULT_HOLD_MS);
 
     return () => window.clearTimeout(timer);
-  }, [addLog, roundResultHoldRound]);
+  }, [continueAfterRoundResult, roundResultHoldRound, selectedConversationId, selectedNodeId, selectedThinkingNodeId]);
 
   useEffect(() => {
     if (!roundIntro) return undefined;
@@ -1153,7 +1441,7 @@ export default function App() {
     const intro = roundIntro;
     const timer = window.setTimeout(() => {
       setRoundIntro((current) => current?.id === intro.id ? null : current);
-    }, 2000);
+    }, ROUND_INTRO_DURATION_MS);
 
     return () => window.clearTimeout(timer);
   }, [roundIntro]);
@@ -1164,29 +1452,25 @@ export default function App() {
 
     if (phase === 'MOVING_TO_ROOMS') {
       addLog('Round 1 started. Nodes are moving to their labs.');
-      const activeCharacters = getReviewParticipants(charactersRef.current);
+      const allCharacters = charactersRef.current;
+      const activeCharacters = getReviewParticipants(allCharacters);
       const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
       const moveDuration = Math.max(
         0,
-        ...activeCharacters.map((character) => movementDurationMs(character, getCharacterTarget(character.id, selectedRoom))),
+        ...allCharacters.map((character) => movementDurationMs(character, getCharacterTarget(character.id, selectedRoom))),
       );
 
       setCharacters((prev) =>
-        prev.map((character) => activeCharacterIds.has(character.id)
-          ? {
-              ...character,
-              status: 'MOVING',
-              position: getCharacterTarget(character.id, selectedRoom),
-            }
-          : {
-              ...character,
-              status: 'IDLE',
-              position: character.idlePosition,
-            }),
+        prev.map((character) => ({
+          ...character,
+          status: 'MOVING',
+          position: getCharacterTarget(character.id, selectedRoom),
+        })),
       );
 
       const timer = window.setTimeout(() => {
         setPhase('ROUND_1');
+        setRoundProcessStartDelayMs(0);
         setCharacters((prev) => {
           const participantIds = new Set(getReviewParticipants(prev).map((character) => character.id));
 
@@ -1195,19 +1479,19 @@ export default function App() {
             : character);
         });
         addLog('Round 1 started. Nodes are reviewing independently.');
-      }, moveDuration + 120);
+      }, moveDuration + ROUND_MOVEMENT_SETTLE_MS);
       return () => window.clearTimeout(timer);
     }
 
     if (phase === 'ROUND_1') {
       const timer = window.setTimeout(() => {
-        if (selectedThinkingNodeIdRef.current) {
+        if (selectedNodeIdRef.current || selectedThinkingNodeIdRef.current) {
           setPendingDiscussionAdvanceRound(1);
           return;
         }
         applyRoundScores(1);
         setRoundResultHoldRound(1);
-      }, 3000);
+      }, roundProcessDurationMs(3));
       return () => window.clearTimeout(timer);
     }
 
@@ -1222,12 +1506,12 @@ export default function App() {
 
     if (phase === 'ROUND_2') {
       const timer = window.setTimeout(() => {
-        if (selectedConversationIdRef.current || selectedThinkingNodeIdRef.current) {
+        if (selectedNodeIdRef.current || selectedConversationIdRef.current || selectedThinkingNodeIdRef.current) {
           setPendingDiscussionAdvanceRound(2);
           return;
         }
         advanceFromRound2();
-      }, 5000);
+      }, roundProcessStartDelayMs + roundProcessDurationMs(AUDIT_QUORUM));
       return () => window.clearTimeout(timer);
     }
 
@@ -1242,26 +1526,27 @@ export default function App() {
 
     if (phase === 'ROUND_3') {
       const timer = window.setTimeout(() => {
-        if (selectedConversationIdRef.current || selectedThinkingNodeIdRef.current) {
+        if (selectedNodeIdRef.current || selectedConversationIdRef.current || selectedThinkingNodeIdRef.current) {
           setPendingDiscussionAdvanceRound(3);
           return;
         }
         advanceFromRound3();
-      }, 5000);
+      }, roundProcessStartDelayMs + roundProcessDurationMs(4));
       return () => window.clearTimeout(timer);
     }
 
     if (phase === 'FINALIZING') {
-      const timer = window.setTimeout(finalizeScores, 2200);
+      const timer = window.setTimeout(finalizeScores, roundProcessStartDelayMs + FINAL_RESULT_EXPAND_DELAY_MS);
       return () => window.clearTimeout(timer);
     }
 
     return undefined;
-  }, [addLog, advanceFromRound2, advanceFromRound3, applyRoundScores, clearMeetingTimers, finalizeScores, phase, roundIntro, roundResultHoldRound, selectedRoom, startDiscussionRound]);
+  }, [addLog, advanceFromRound2, advanceFromRound3, applyRoundScores, clearMeetingTimers, finalizeScores, phase, roundIntro, roundProcessStartDelayMs, roundResultHoldRound, selectedRoom, startDiscussionRound]);
 
   const isFinalResultVisible = phase === 'EVALUATED' && Boolean(finalResult);
   const hasReviewScores = reviewParticipants.some((character) => typeof character.lastScore === 'number');
   const isRoundBillboardPhase = (
+    phase === 'SELECTION' ||
     phase === 'ROUND_1' ||
     phase === 'ROUND_2_STARTING' ||
     phase === 'ROUND_2' ||
@@ -1293,6 +1578,16 @@ export default function App() {
           shadow: 'rgba(38, 59, 72, 0.3)',
           text: 'text-[#17384b]',
         };
+  const handleRoomPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (phase === 'EVALUATED') return;
+    if (!selectedReviewerNode) return;
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('[data-reviewer-detail-trigger="true"]')) return;
+
+    setSelectedNodeId(null);
+  }, [phase, selectedReviewerNode]);
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[#f2e7c9] font-pixel text-[#503521]">
@@ -1311,7 +1606,10 @@ export default function App() {
       {page === 'room' && (
         <div className="evaluation-room-cool relative flex h-screen overflow-hidden">
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="relative min-h-0 flex-1 overflow-hidden border-b-4 border-[#7b5835]">
+            <div
+              className="relative min-h-0 flex-1 overflow-hidden border-b-4 border-[#7b5835]"
+              onPointerDownCapture={handleRoomPointerDownCapture}
+            >
               <ConferenceHall tiles={activeRoomScene.tiles} />
 
               <section className="absolute bottom-6 left-16 z-40 max-w-xl">
@@ -1330,6 +1628,7 @@ export default function App() {
                   label={config.label}
                   position={config.position}
                   imageUrl={ASSET_PATHS.rooms[config.roomAssetId]}
+                  inactive={shouldDimInactiveLabs && Boolean(config.reviewerId) && !selectedReviewerIdsForRooms.has(config.reviewerId ?? '')}
                 />
               ))}
 
@@ -1341,9 +1640,10 @@ export default function App() {
                 finalNodeCount={finalResult?.nodes.length}
                 finalNodes={finalResult?.nodes ?? []}
                 selectedNodeId={selectedNodeId}
-                onInspectNode={inspectNode}
+                onInspectNode={(node) => inspectReviewer(node.id)}
                 phase={phase}
                 currentRound={currentRound}
+                reviewRoundState={activeReviewRoundState}
               />
 
               <AnimatePresence>
@@ -1353,6 +1653,7 @@ export default function App() {
                     isComplete={isNodeSelectionReady}
                     onSkip={completeNodeSelection}
                     onStartReview={startSelectedReview}
+                    onInspectNode={inspectReviewer}
                   />
                 )}
               </AnimatePresence>
@@ -1368,87 +1669,93 @@ export default function App() {
                     transition={{ duration: 0.3, ease: 'easeOut' }}
                   >
                     <motion.div
-                      className="scoreboard-round-intro px-8 py-5 text-5xl font-bold uppercase tracking-widest"
+                      className="scoreboard-round-intro flex min-w-[420px] flex-col items-center gap-3 px-8 py-6 text-center font-bold uppercase tracking-widest"
                       initial={{ opacity: 0, scale: 0.86, y: 16 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 1.08, y: -18 }}
                       transition={{ type: 'spring', damping: 20, stiffness: 260 }}
                     >
-                      Round {String(roundIntro.round).padStart(2, '0')} Start
+                      <span className="text-5xl leading-none">Round {String(roundIntro.round).padStart(2, '0')} Start</span>
+                      <span className="border-2 border-[#f1c46d] bg-[#332b1f] px-3 py-1.5 text-sm leading-none tracking-[0.18em] text-[#ffd98a] shadow-[2px_2px_0_rgba(7,17,31,0.55)]">
+                        {roundIntroSubtitle(roundIntro.round)}
+                      </span>
                     </motion.div>
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {phase !== 'SELECTION' && (
-                <div className="absolute inset-0 pointer-events-none">
-                  {sceneCharacters.map((character) => (
-                    <div key={character.id} className="pointer-events-auto">
-                      {(() => {
-                        const result = finalResult?.nodes.find((node) => node.id === character.id);
-                        const tokenFlow = result ? result.rewardAmount - result.slashAmount : 0;
-                        const activeConversation = findConversationForNode(activeConversations, character.id);
-                        const hasMetPartner = Boolean(activeConversation && metConversationIds.includes(activeConversation.id));
-                        const characterAnchorStyle = {
-                          left: `calc(${character.position.x}% + ${character.position.offsetX || 0}px)`,
-                          top: `calc(${character.position.y}% + ${character.position.offsetY || 0}px)`,
-                        };
+              <div className="absolute inset-0 pointer-events-none">
+                {sceneCharacters.map((character) => (
+                  <div key={character.id} className="pointer-events-auto">
+                    {(() => {
+                      const result = finalResult?.nodes.find((node) => node.id === character.id);
+                      const tokenFlow = result ? result.rewardAmount - result.slashAmount : 0;
+                      const activeConversation = findConversationForNode(activeConversations, character.id);
+                      const hasMetPartner = Boolean(activeConversation && metConversationIds.includes(activeConversation.id));
+                      const isRoundTwoTableTalk = phase === 'ROUND_2' && character.status === 'DISCUSSING';
+                      const characterAnchorStyle = {
+                        left: `calc(${character.position.x}% + ${character.position.offsetX || 0}px)`,
+                        top: `calc(${character.position.y}% + ${character.position.offsetY || 0}px)`,
+                      };
+                      const isReviewerCharacter = Boolean(activeReviewRoundState?.reviewers.some((reviewer) => reviewer.id === character.id));
 
-                        return (
-                          <div className={result?.isOutlier ? 'node--slashed' : result ? 'node--rewarded' : undefined}>
-                            <Character
-                              data={character}
-                              onClick={() => inspectSceneNode(character.id)}
-                              isSelected={
-                                selectedNodeId === character.id ||
-                                selectedThinkingNodeId === character.id ||
-                                Boolean(selectedConversation?.participantIds.includes(character.id))
-                              }
-                              showTalkingBubble={hasMetPartner}
-                              showThoughtCloud={character.status === 'THINKING'}
-                            />
-                            <AnimatePresence>
-                              {roundResultHoldRound && (
-                                <RoundScorePopup
-                                  character={character}
-                                  round={roundResultHoldRound}
-                                  style={{
-                                    left: characterAnchorStyle.left,
-                                    top: `calc(${characterAnchorStyle.top} - 82px)`,
-                                  }}
-                                />
-                              )}
-                            </AnimatePresence>
-                            {isFinalResultVisible && result && result.isOutlier && (
-                              <ResultExplosionSequence
-                                src={ASSET_PATHS.effects.explosion}
-                                baseStyle={characterAnchorStyle}
-                              />
-                            )}
-                            {isFinalResultVisible && result && !result.isOutlier && (
-                              <ResultSparkleSequence
-                                src={ASSET_PATHS.effects.sparkle}
-                                baseStyle={characterAnchorStyle}
-                              />
-                            )}
-                            {isFinalResultVisible && result && tokenFlow !== 0 && (
-                              <div className={`absolute z-50 -translate-x-1/2 text-xs font-bold ${tokenFlow > 0 ? 'token-float--gain' : 'token-float--loss'}`}
+                      return (
+                        <div
+                          className={result?.isOutlier ? 'node--slashed' : result ? 'node--rewarded' : undefined}
+                          data-reviewer-detail-trigger={isReviewerCharacter ? 'true' : undefined}
+                        >
+                          <Character
+                            data={character}
+                            onClick={() => inspectSceneNode(character.id)}
+                            isSelected={
+                              selectedNodeId === character.id ||
+                              selectedThinkingNodeId === character.id ||
+                              Boolean(selectedConversation?.participantIds.includes(character.id))
+                            }
+                            showTalkingBubble={hasMetPartner || isRoundTwoTableTalk}
+                            showThoughtCloud={character.status === 'THINKING'}
+                          />
+                          <AnimatePresence>
+                            {roundResultHoldRound && (
+                              <RoundScorePopup
+                                character={character}
+                                round={roundResultHoldRound}
                                 style={{
                                   left: characterAnchorStyle.left,
-                                  top: `calc(${characterAnchorStyle.top} - 54px)`,
+                                  top: `calc(${characterAnchorStyle.top} - 82px)`,
                                 }}
-                              >
-                                {tokenFlow > 0 ? '+' : ''}
-                                {tokenFlow.toFixed(1)} TOK
-                              </div>
+                              />
                             )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  ))}
-                </div>
-              )}
+                          </AnimatePresence>
+                          {isFinalResultVisible && result && result.isOutlier && (
+                            <ResultExplosionSequence
+                              src={ASSET_PATHS.effects.explosion}
+                              baseStyle={characterAnchorStyle}
+                            />
+                          )}
+                          {isFinalResultVisible && result && !result.isOutlier && (
+                            <ResultSparkleSequence
+                              src={ASSET_PATHS.effects.sparkle}
+                              baseStyle={characterAnchorStyle}
+                            />
+                          )}
+                          {isFinalResultVisible && result && tokenFlow !== 0 && (
+                            <div className={`absolute z-50 -translate-x-1/2 text-xs font-bold ${tokenFlow > 0 ? 'token-float--gain' : 'token-float--loss'}`}
+                              style={{
+                                left: characterAnchorStyle.left,
+                                top: `calc(${characterAnchorStyle.top} - 54px)`,
+                              }}
+                            >
+                              {tokenFlow > 0 ? '+' : ''}
+                              {tokenFlow.toFixed(1)} TOK
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
 
               <div className="pointer-events-none absolute bottom-6 right-6 z-[75] flex flex-col items-end gap-2">
                 {isFinalResultVisible && confirmArmed && (
@@ -1544,7 +1851,23 @@ export default function App() {
             </div>
             <div ref={sideboardActivityRef} className="min-h-0 flex flex-1 flex-col">
               <AnimatePresence mode="wait" initial={false}>
-                {selectedConversation ? (
+                {!isFinalResultVisible && activeReviewRoundState && selectedReviewerNode ? (
+                  <motion.div
+                    key={`reviewer-side-${selectedReviewerNode.id}-${activeReviewRoundState.phase}`}
+                    initial={{ opacity: 0, x: 16 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 16 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                    className="min-h-0 flex-1"
+                  >
+                    <ReviewerSidePanel
+                      state={activeReviewRoundState}
+                      reviewer={selectedReviewerNode}
+                      roundCompleted={selectedReviewerRoundCompleted}
+                      onClose={() => setSelectedNodeId(null)}
+                    />
+                  </motion.div>
+                ) : selectedConversation ? (
                   <ConversationDrawer
                     conversation={selectedConversation}
                     onClose={() => setSelectedConversationId(null)}
@@ -1565,7 +1888,23 @@ export default function App() {
                     transition={{ duration: 0.2, ease: 'easeOut' }}
                     className="flex min-h-0 flex-1 flex-col gap-4"
                   >
-                    <TrustScorePanel characters={sideboardCharacters} />
+                    {activeReviewRoundState?.phase === 'round2' && phase === 'ROUND_2' && (
+                      <AuditQuorumTracker
+                        audits={activeReviewRoundState.audits}
+                        reviewers={activeReviewRoundState.reviewers}
+                        quorum={activeReviewRoundState.auditQuorum}
+                        isActive={phase === 'ROUND_2'}
+                        startDelayMs={roundProcessStartDelayMs}
+                      />
+                    )}
+                    {activeReviewRoundState?.phase === 'round3' && (
+                      <ReputationWeightingPanel state={activeReviewRoundState} />
+                    )}
+                    <ReputationScorePanel
+                      characters={sideboardCharacters}
+                      selectedIds={activeReviewRoundState?.selectedReviewerIds}
+                      dimInactive={Boolean(activeReviewRoundState)}
+                    />
                     <div className="min-h-0 flex-1">
                       <LogPanel logs={logs} />
                     </div>
@@ -1576,7 +1915,7 @@ export default function App() {
           </aside>
 
           <AnimatePresence>
-            {selectedNodeResult && (
+            {isFinalResultVisible && selectedNodeResult && (
               <NodeDetailDrawer
                 node={selectedNodeResult}
                 open={Boolean(selectedNodeResult)}

@@ -1,11 +1,13 @@
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ChevronDown, ChevronUp, CircleAlert } from 'lucide-react';
-import { AICharacter, FinalEvaluationSummary, NodeEvaluationResult, SimulationPhase } from '../types';
+import { AICharacter, FinalEvaluationSummary, NodeEvaluationResult, ReviewRoundState, SimulationPhase } from '../types';
 import { ASSET_PATHS } from '../assets/assetPaths';
+import { AUDIT_VRF_PROBABILITY, REVIEW_VRF_PROBABILITY, REVIEWER_COUNT } from '../utils/reviewScoring';
 import StandardDeviationChart from './StandardDeviationChart';
 import NodeResultsTable from './NodeResultsTable';
+import RoundProgressStepper from './RoundProgressStepper';
 
 interface BillboardProps {
   characters: AICharacter[];
@@ -18,6 +20,8 @@ interface BillboardProps {
   onInspectNode?: (node: NodeEvaluationResult) => void;
   phase?: SimulationPhase;
   currentRound?: number;
+  reviewRoundState?: ReviewRoundState | null;
+  action?: ReactNode;
 }
 
 function formatNumber(value: number) {
@@ -42,6 +46,8 @@ function activeRoundFromPhase(phase?: SimulationPhase, currentRound = 1) {
 
 function titleForPhase(phase?: SimulationPhase, currentRound = 1) {
   switch (phase) {
+    case 'SELECTION':
+      return 'Selection';
     case 'MOVING_TO_ROOMS':
     case 'ROUND_1':
       return 'Round 01';
@@ -75,6 +81,8 @@ export default function Billboard({
   onInspectNode,
   phase,
   currentRound,
+  reviewRoundState,
+  action,
 }: BillboardProps) {
   const isFinal = Boolean(finalSummary);
   const nodeCount = finalNodeCount ?? characters.length;
@@ -84,6 +92,7 @@ export default function Billboard({
   const billboardRef = useRef<HTMLDivElement | null>(null);
   const hasNodeResults = isFinal && finalNodes.length > 0 && Boolean(onInspectNode);
   const bountyWinnerNodes = finalNodes.filter((node) => node.bountyRewardAmount > 0);
+  const isSelection = phase === 'SELECTION' || reviewRoundState?.phase === 'selection';
   const latestResultRound = characters.reduce((latest, character) => {
     const characterLatest = character.scoreHistory.reduce((max, score) => Math.max(max, score.round), 0);
     return Math.max(latest, characterLatest);
@@ -91,13 +100,15 @@ export default function Billboard({
   const activeRound = activeRoundFromPhase(phase, currentRound);
   const latestResultKey: number | 'final' = isFinal ? 'final' : latestResultRound;
   const resultKeys = [
-    ...Array.from({ length: latestResultRound }, (_, index) => index + 1),
+    ...Array.from({ length: latestResultRound }, (_, index) => index + 1)
+      .filter((round) => !(isFinal && round === 3)),
     ...(isFinal ? (['final'] as const) : []),
   ];
   const [selectedResultKey, setSelectedResultKey] = useState<number | 'final'>(latestResultKey || 1);
   const [highlightConsensus, setHighlightConsensus] = useState(false);
-  const isRoundInProgress = !isFinal && activeRound > latestResultRound;
-  const shouldShowEmptyActiveRound = !isFinal && latestResultRound === 0;
+  const isFinalizing = phase === 'FINALIZING';
+  const isRoundInProgress = !isFinal && !isSelection && (activeRound > latestResultRound || isFinalizing);
+  const shouldShowEmptyActiveRound = !isFinal && !isSelection && latestResultRound === 0;
   const displayResultKey = shouldShowEmptyActiveRound
     ? activeRound
     : resultKeys.includes(selectedResultKey)
@@ -105,6 +116,7 @@ export default function Billboard({
       : latestResultKey || activeRound;
   const selectedResultIndex = resultKeys.findIndex((key) => key === displayResultKey);
   const canBrowseResults = resultKeys.length > 1;
+  const progressPhase: ReviewRoundState['phase'] = reviewRoundState?.phase ?? (isFinal ? 'final' : isSelection ? 'selection' : activeRound === 2 ? 'round2' : activeRound === 3 ? 'round3' : 'round1');
 
   useEffect(() => {
     if (!showNodeResults) return undefined;
@@ -120,6 +132,12 @@ export default function Billboard({
     document.addEventListener('pointerdown', handleOutsidePointerDown);
     return () => document.removeEventListener('pointerdown', handleOutsidePointerDown);
   }, [selectedNodeId, showNodeResults]);
+
+  useEffect(() => {
+    if (isFinal) {
+      setShowNodeResults(false);
+    }
+  }, [isFinal]);
 
   useEffect(() => {
     if (!latestResultKey) return;
@@ -193,12 +211,23 @@ export default function Billboard({
           exit={{ y: -100, opacity: 0 }}
           transition={{ type: 'spring', damping: 30, stiffness: 220 }}
           className={`absolute left-1/2 top-2 z-[70] w-full -translate-x-1/2 px-2 ${
-            isFinal ? (showNodeResults ? 'max-w-[940px]' : 'max-w-[560px]') : isRoundInProgress ? 'max-w-[380px]' : 'max-w-xl'
+            isFinal
+              ? (showNodeResults ? 'max-w-[940px]' : 'max-w-[560px]')
+              : isSelection
+                ? 'max-w-[520px]'
+              : isRoundInProgress
+                ? 'max-w-[380px]'
+                : 'max-w-xl'
           }`}
         >
           <span className="scoreboard-hanger left-[30%]" aria-hidden="true" />
           <span className="scoreboard-hanger right-[30%]" aria-hidden="true" />
           <div className={`scoreboard-shell text-center ${isRoundInProgress ? 'p-2.5' : 'p-4'}`}>
+            {reviewRoundState && (
+              <div className="mb-2">
+                <RoundProgressStepper phase={progressPhase} />
+              </div>
+            )}
             <div className={`flex min-w-0 items-center justify-center gap-2 sm:gap-3 ${isRoundInProgress ? 'mb-1.5' : 'mb-3'}`}>
               <div className={`scoreboard-side-light hidden items-center justify-between px-2 sm:flex ${isRoundInProgress ? 'h-7' : 'h-10'}`}>
                 <span className="scoreboard-led" />
@@ -215,11 +244,13 @@ export default function Billboard({
                 ) : (
                   <>
                     {titleForPhase(phase, activeRound)}
-                    <span className="scoreboard-loading-dots" aria-hidden="true">
-                      <span>.</span>
-                      <span>.</span>
-                      <span>.</span>
-                    </span>
+                    {!isSelection && (
+                      <span className="scoreboard-loading-dots" aria-hidden="true">
+                        <span>.</span>
+                        <span>.</span>
+                        <span>.</span>
+                      </span>
+                    )}
                   </>
                 )}
               </motion.h2>
@@ -231,35 +262,43 @@ export default function Billboard({
 
             <motion.div
               layout
-              className={`grid items-stretch ${isFinal ? 'gap-3 md:grid-cols-[minmax(0,1fr)_176px]' : 'grid-cols-1 gap-2'}`}
+              className={`grid items-stretch ${
+                isFinal
+                  ? 'gap-3 md:grid-cols-[minmax(0,1fr)_176px]'
+                  : 'grid-cols-1 gap-2'
+              }`}
               transition={{ type: 'spring', damping: 28, stiffness: 220 }}
             >
               <motion.div key="chart-column" layout className="min-w-0 p-2">
-                <div className="relative pb-8">
-                  {chart}
-                  {canBrowseResults && (
-                    <div className="pointer-events-none absolute bottom-0 -left-3 -right-3 z-50 flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={showPreviousResult}
-                        disabled={selectedResultIndex <= 0}
-                        className="scoreboard-nav-button pointer-events-auto disabled:opacity-35"
-                        aria-label="Previous round result"
-                      >
-                        &lt;
-                      </button>
-                      <button
-                        type="button"
-                        onClick={showNextResult}
-                        disabled={selectedResultIndex >= resultKeys.length - 1}
-                        className="scoreboard-nav-button pointer-events-auto disabled:opacity-35"
-                        aria-label="Next round result"
-                      >
-                        &gt;
-                      </button>
-                    </div>
-                  )}
-                </div>
+                {isSelection ? (
+                  <SelectionRulesPanel />
+                ) : (
+                  <div className="relative pb-8">
+                    {chart}
+                    {canBrowseResults && (
+                      <div className="pointer-events-none absolute bottom-0 -left-3 -right-3 z-50 flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={showPreviousResult}
+                          disabled={selectedResultIndex <= 0}
+                          className="scoreboard-nav-button pointer-events-auto disabled:opacity-35"
+                          aria-label="Previous round result"
+                        >
+                          &lt;
+                        </button>
+                        <button
+                          type="button"
+                          onClick={showNextResult}
+                          disabled={selectedResultIndex >= resultKeys.length - 1}
+                          className="scoreboard-nav-button pointer-events-auto disabled:opacity-35"
+                          aria-label="Next round result"
+                        >
+                          &gt;
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </motion.div>
 
               {finalSummary && (
@@ -291,16 +330,22 @@ export default function Billboard({
                       aria-expanded={showNodeResults}
                     >
                       {showNodeResults ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                      Node Detail
+                      {showNodeResults ? 'Collapse Results' : 'Expand Results'}
                     </button>
                   )}
                 </motion.div>
               )}
             </motion.div>
 
+            {action && (
+              <div className="mt-2 flex justify-end">
+                {action}
+              </div>
+            )}
+
             {characters.some(c => c.isOutlier) && !showDetails && (
               <div className="mt-2 text-[8px] text-[#b93c2f] bg-[#fff0ea] py-0.5 uppercase tracking-widest animate-pulse border-y border-[#d87965]/60">
-                Outliers detected: trust and stake penalties applied
+                Outliers detected: reputation and stake penalties applied
               </div>
             )}
 
@@ -333,6 +378,30 @@ export default function Billboard({
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+function SelectionRulesPanel() {
+  return (
+    <motion.div
+      key="selection-rules"
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={{ type: 'spring', damping: 24, stiffness: 220 }}
+      className="mx-auto max-w-[420px] text-left text-[10px] font-bold uppercase leading-relaxed tracking-wider text-[#d9f7ff]"
+    >
+      <p>
+        VRF selection roll {(REVIEW_VRF_PROBABILITY * 100).toFixed(0)}%. Final reviewers are locked to exactly {REVIEWER_COUNT}.
+      </p>
+      <p className="mt-1 text-[#9ff8ff]">
+        Audit VRF {(AUDIT_VRF_PROBABILITY * 100).toFixed(0)}%. Only selected reviewers enter rounds 1, 2, and 3.
+      </p>
+      <p className="mt-1 text-[#9eb6c3]">
+        Click highlighted lab reviewers to open their detail page.
+      </p>
+    </motion.div>
   );
 }
 

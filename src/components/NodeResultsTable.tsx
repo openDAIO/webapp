@@ -4,7 +4,7 @@ import { NodeEvaluationResult, NodeEvaluationStatus } from '../types';
 import { ASSET_PATHS } from '../assets/assetPaths';
 import { PixelFrameChrome } from './PixelFrame';
 import TokenFlowBadge from './TokenFlowBadge';
-import TrustChangeBadge from './TrustChangeBadge';
+import ReputationChangeBadge from './ReputationChangeBadge';
 
 interface NodeResultsTableProps {
   nodes: NodeEvaluationResult[];
@@ -37,6 +37,50 @@ const scoreboardStatusClass: Record<NodeEvaluationStatus, string> = {
   slashed: 'border-[#ff8b7d] bg-[#351f25] text-[#ffc0b8]',
 };
 
+function formatProtocolValue(value?: number) {
+  return typeof value === 'number' ? value.toLocaleString() : '--';
+}
+
+function ProtocolCell({
+  node,
+  isScoreboard,
+}: {
+  node: NodeEvaluationResult;
+  isScoreboard: boolean;
+}) {
+  const reviewNode = node.reviewNode;
+
+  if (!reviewNode) {
+    return <span className={isScoreboard ? 'text-[#718696]' : 'text-[#8c745b]'}>--</span>;
+  }
+
+  const itemClass = isScoreboard
+    ? 'border border-[#566b7a] bg-[#172a3a] text-[#9eb6c3]'
+    : 'border border-[#d7b98f] bg-[#fff8e6] text-[#8c745b]';
+  const valueClass = isScoreboard ? 'text-[#ffd98a]' : 'text-[#2f5d7e]';
+
+  return (
+    <div className="grid grid-cols-2 gap-1 text-[8px] uppercase leading-tight tracking-wider">
+      <span className={`${itemClass} px-1 py-0.5`}>
+        <span className="block truncate">Proposal</span>
+        <strong className={`block truncate font-mono text-[9px] ${valueClass}`}>{formatProtocolValue(reviewNode.proposalScore)}</strong>
+      </span>
+      <span className={`${itemClass} px-1 py-0.5`}>
+        <span className="block truncate">Reputation</span>
+        <strong className={`block truncate font-mono text-[9px] ${valueClass}`}>{formatProtocolValue(reviewNode.round2?.reputationScore)}</strong>
+      </span>
+      <span className={`${itemClass} px-1 py-0.5`}>
+        <span className="block truncate">Final Wt</span>
+        <strong className={`block truncate font-mono text-[9px] ${valueClass}`}>{formatProtocolValue(reviewNode.round2?.finalWeight)}</strong>
+      </span>
+      <span className={`${itemClass} px-1 py-0.5`}>
+        <span className="block truncate">Weighted</span>
+        <strong className={`block truncate font-mono text-[9px] ${valueClass}`}>{formatProtocolValue(reviewNode.round2?.weightedScore)}</strong>
+      </span>
+    </div>
+  );
+}
+
 export default function NodeResultsTable({
   nodes,
   selectedNodeId,
@@ -47,6 +91,7 @@ export default function NodeResultsTable({
   variant = 'default',
 }: NodeResultsTableProps) {
   const isScoreboard = variant === 'scoreboard';
+  const hasProtocolData = nodes.some((node) => Boolean(node.reviewNode));
 
   const content = (
     <>
@@ -73,20 +118,21 @@ export default function NodeResultsTable({
           }`}>
             <thead className={`${compact ? 'text-[9px]' : 'text-[10px] lg:text-xs'} uppercase tracking-wider ${isScoreboard ? 'text-[#9ff8ff]' : 'text-[#6b563f]'}`}>
               <tr>
-                <th className="w-[34%] px-1 py-1 lg:px-2">Node</th>
-                <th className="w-[11%] px-1 py-1 lg:px-2">Score</th>
-                <th className="w-[15%] px-1 py-1 lg:px-2">Trust</th>
-                <th className="w-[17%] px-1 py-1 lg:px-2">Bounty</th>
-                <th className="w-[15%] px-1 py-1 lg:px-2">Stake</th>
-                <th className="w-[8%] px-1 py-1 lg:px-2">Inspect</th>
+                <th className={`${hasProtocolData ? 'w-[24%]' : 'w-[34%]'} px-1 py-1 lg:px-2`}>Node</th>
+                <th className={`${hasProtocolData ? 'w-[8%]' : 'w-[11%]'} px-1 py-1 lg:px-2`}>Score</th>
+                {hasProtocolData && <th className="w-[23%] px-1 py-1 lg:px-2">Protocol</th>}
+                <th className={`${hasProtocolData ? 'w-[10%]' : 'w-[15%]'} px-1 py-1 lg:px-2`}>Reputation</th>
+                <th className={`${hasProtocolData ? 'w-[14%]' : 'w-[17%]'} px-1 py-1 lg:px-2`}>Bounty</th>
+                <th className={`${hasProtocolData ? 'w-[14%]' : 'w-[15%]'} px-1 py-1 lg:px-2`}>Stake</th>
+                <th className={`${hasProtocolData ? 'w-[7%]' : 'w-[8%]'} px-1 py-1 lg:px-2`}>Inspect</th>
               </tr>
             </thead>
             <tbody>
               {nodes.map((node) => {
                 const stakeFlow = -node.slashAmount;
                 const isSelected = selectedNodeId === node.id;
-                const trustChange = node.trustAfter - node.trustBefore;
-                const trustTone = trustChange > 0 ? 'text-[#9effc2]' : trustChange < 0 ? 'text-[#ffb3aa]' : 'text-[#d9f7ff]';
+                const reputationChange = node.reputationAfter - node.reputationBefore;
+                const reputationTone = reputationChange > 0 ? 'text-[#9effc2]' : reputationChange < 0 ? 'text-[#ffb3aa]' : 'text-[#d9f7ff]';
                 const stakeTone = stakeFlow < 0 ? 'text-[#ffb3aa]' : 'text-[#9effc2]';
                 const cellClass = isScoreboard
                   ? `border-y-2 border-[#718696] px-1 lg:px-2 ${compact ? 'py-2.5' : 'py-3'}`
@@ -120,21 +166,26 @@ export default function NodeResultsTable({
                       </span>
                     </td>
                     <td className={`${cellClass} ${isScoreboard ? 'font-mono text-sm font-bold text-[#9ff8ff]' : 'text-sm font-bold'}`}>{node.finalScore}</td>
+                    {hasProtocolData && (
+                      <td className={cellClass}>
+                        <ProtocolCell node={node} isScoreboard={isScoreboard} />
+                      </td>
+                    )}
                     <td className={cellClass}>
                       {isScoreboard ? (
-                        <span className={`font-mono text-sm font-bold ${trustTone}`}>
-                          {trustChange > 0 ? `+${trustChange}` : trustChange < 0 ? trustChange : '0'}
+                        <span className={`font-mono text-sm font-bold ${reputationTone}`}>
+                          {reputationChange > 0 ? `+${reputationChange}` : reputationChange < 0 ? reputationChange : '0'}
                         </span>
                       ) : (
-                        <TrustChangeBadge before={node.trustBefore} after={node.trustAfter} />
+                        <ReputationChangeBadge before={node.reputationBefore} after={node.reputationAfter} />
                       )}
                     </td>
                     <td className={`break-words font-bold leading-tight ${isScoreboard ? 'text-[#ffd98a]' : 'text-[#2f6f35]'} ${cellClass}`}>
                       {node.bountyRewardAmount > 0 ? `${node.bountyRewardAmount.toFixed(2)} USDT` : '--'}
                     </td>
-                    <td className={cellClass}>
+                    <td className={`${cellClass} whitespace-nowrap`}>
                       {isScoreboard ? (
-                        <span className={`font-mono text-sm font-bold ${stakeTone}`}>
+                        <span className={`whitespace-nowrap font-mono text-sm font-bold ${stakeTone}`}>
                           {stakeFlow < 0 ? stakeFlow.toFixed(1) : '0'} TOK
                         </span>
                       ) : (

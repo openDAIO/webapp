@@ -624,9 +624,9 @@ export default function ReviewBountyGateOverlay({
                       activeText: '#23351f',
                     }
                   : {
-                      activeFill: '#9ed4e8',
-                      activeBorder: '#2f5d7e',
-                      activeText: '#17384b',
+                      activeFill: '#ffd7ef',
+                      activeBorder: '#e95fb3',
+                      activeText: '#76255b',
                     };
               const fill = isSelected ? tone.activeFill : '#fff8e6';
               const border = isSelected ? tone.activeBorder : '#d7b98f';
@@ -709,46 +709,53 @@ export default function ReviewBountyGateOverlay({
               </span>
             </PixelFrame>
           </>
-        ) : (
-          <p className="mb-2 text-xs font-bold text-[#6b563f]">
-            Bounty settles in USDAIO — edit pay/receive amounts below (fixed mock rate; on-chain quoter later).
-          </p>
+        ) : null}
+        {!isEthMode && (
+          <div className={`mb-3 text-xs font-bold ${isAmountValid ? 'text-[#2f6f35]' : 'text-[#9c342d]'}`}>
+            {helperText}
+          </div>
         )}
-        <div className={`mb-3 text-xs font-bold ${isAmountValid ? 'text-[#2f6f35]' : 'text-[#9c342d]'}`}>
-          {helperText}
-        </div>
 
         {isEthMode && (
           <PixelFrame
-            className="mb-3 p-3"
-            color="#83add0"
-            fillColor="#edf5fa"
+            className="mb-2 p-4"
+            color="#e95fb3"
+            fillColor="#fff4fb"
             round={2}
-            thickness={4}
+            thickness={5}
             outerShadowOffsetX={0}
             outerShadowOffsetY={0}
             outerShadowColor="transparent"
           >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#2f5d7e]">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-3">
                 <img
                   src="/assets/ui/brands/uniswap/uniswap.png"
                   alt="Uniswap"
-                  className="h-4 w-4 pixelated"
+                  className="h-8 w-8 flex-shrink-0 pixelated drop-shadow-[2px_2px_0_rgba(118,37,91,0.2)]"
                   referrerPolicy="no-referrer"
                 />
-                {UNISWAP_V4_HOOK_LABEL} Auto-Swap
+                <span className="min-w-0 leading-none">
+                  <span className="block text-xl font-bold text-[#76255b]">
+                    {UNISWAP_V4_HOOK_LABEL} Auto-Swap
+                  </span>
+                  <span className="mt-1 block text-xs font-bold uppercase tracking-wider text-[#9b3f78]">
+                    Route Preview
+                  </span>
+                </span>
               </span>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-[#365d7c]">
+              <span className="flex-shrink-0 border-2 border-[#e95fb3] bg-white px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-[#76255b]">
                 ETH ⇄ USDAIO
               </span>
             </div>
-            <div className="flex flex-row items-end gap-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_2.5rem_minmax(0,1fr)] items-end gap-2">
               <div className="min-w-0 flex-1 text-left">
-                <div className="mb-1 text-[10px] uppercase tracking-wider text-[#365d7c]">You pay</div>
+                <div className="mb-2 border-l-4 border-[#e95fb3] pl-2 text-sm font-bold uppercase tracking-wider text-[#76255b]">
+                  You pay
+                </div>
                 <PixelFrame
-                  className="flex min-h-[3rem] items-stretch"
-                  color="#6a9eba"
+                  className="flex min-h-[3.35rem] items-stretch"
+                  color="#e95fb3"
                   fillColor="#ffffff"
                   round={2}
                   thickness={3}
@@ -769,22 +776,24 @@ export default function ReviewBountyGateOverlay({
                         setBountyUsdaio(usdaioReceivedForEth(eth));
                       }
                     }}
-                    className="number-input-clean min-w-0 flex-1 bg-transparent px-2 py-2 text-lg font-bold text-[#17384b] outline-none disabled:opacity-70"
+                    className="number-input-clean min-w-0 flex-1 bg-transparent px-3 py-2 text-xl font-bold text-[#76255b] outline-none disabled:opacity-70"
                     aria-label="ETH amount you pay"
                   />
-                  <span className="flex items-center border-l-[3px] border-[#83add0] bg-[#c8e4f5] px-2 text-xs font-bold text-[#17384b]">
+                  <span className="flex items-center border-l-[3px] border-[#e95fb3] bg-[#ffd7ef] px-2 text-sm font-bold text-[#76255b]">
                     ETH
                   </span>
                 </PixelFrame>
               </div>
-              <div className="mb-1 flex h-10 w-10 flex-shrink-0 items-center justify-center self-end text-[#83add0]">
-                <ArrowRightLeft size={18} aria-hidden="true" />
+              <div className="mb-1 flex h-10 w-10 flex-shrink-0 items-center justify-center self-end text-[#e95fb3]">
+                <ArrowRightLeft size={20} aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-1 text-right">
-                <div className="mb-1 text-[10px] uppercase tracking-wider text-[#365d7c]">You receive</div>
+                <div className="mb-2 border-r-4 border-[#2f6f35] pr-2 text-sm font-bold uppercase tracking-wider text-[#23351f]">
+                  You receive
+                </div>
                 <PixelFrame
-                  className="flex min-h-[3rem] items-stretch"
-                  color="#6a9eba"
+                  className="flex min-h-[3.35rem] items-stretch"
+                  color="#6aa76b"
                   fillColor="#ffffff"
                   round={2}
                   thickness={3}
@@ -803,10 +812,10 @@ export default function ReviewBountyGateOverlay({
                       const u = parseFloat(event.target.value);
                       if (Number.isFinite(u) && u >= 0) setBountyUsdaio(u);
                     }}
-                    className="number-input-clean min-w-0 flex-1 bg-transparent px-2 py-2 text-lg font-bold text-[#2f5d7e] outline-none disabled:opacity-70"
+                    className="number-input-clean min-w-0 flex-1 bg-transparent px-3 py-2 text-xl font-bold text-[#2f6f35] outline-none disabled:opacity-70"
                     aria-label="USDAIO amount you receive"
                   />
-                  <span className="flex items-center border-l-[3px] border-[#83add0] bg-[#b8dcb8] px-2 text-xs font-bold text-[#23351f]">
+                  <span className="flex items-center border-l-[3px] border-[#6aa76b] bg-[#b8dcb8] px-2 text-sm font-bold text-[#23351f]">
                     USDAIO
                   </span>
                 </PixelFrame>
@@ -817,14 +826,29 @@ export default function ReviewBountyGateOverlay({
               onClick={() => setInvertRateQuote((v) => !v)}
               aria-pressed={invertRateQuote}
               title="Toggle rate direction"
-              className="mt-2 grid w-full cursor-pointer grid-cols-2 gap-2 rounded-sm border border-transparent px-1 py-1 text-left text-[11px] text-[#365d7c] transition-colors hover:bg-[#dcecf7]/80"
+              className="pixel-frame mt-3 grid w-full cursor-pointer grid-cols-2 gap-2 px-3 py-2 text-left text-[11px] font-bold text-[#76255b] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0.5"
             >
-              <span>Pool fee · {UNISWAP_V4_HOOK_FEE_PCT}%</span>
-              <span className="text-right">
+              <PixelFrameChrome
+                round={2}
+                thickness={3}
+                color="#e95fb3"
+                fillColor="#fff9fd"
+                innerHighlightColor="rgba(255, 255, 255, 0.55)"
+                outerShadowColor="rgba(118, 37, 91, 0.14)"
+                outerShadowOffsetX={2}
+                outerShadowOffsetY={2}
+              />
+              <span className="relative z-40">Pool fee · {UNISWAP_V4_HOOK_FEE_PCT}%</span>
+              <span className="relative z-40 text-right">
                 Rate · {rateDisplayLine}
               </span>
             </button>
           </PixelFrame>
+        )}
+        {isEthMode && (
+          <div className={`mb-3 text-right text-xs font-bold ${isAmountValid ? 'text-[#2f6f35]' : 'text-[#9c342d]'}`}>
+            {helperText}
+          </div>
         )}
 
         <PixelFrame

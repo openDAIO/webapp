@@ -8,10 +8,10 @@ const stats = [
 ];
 
 const rankings = [
-  { name: 'Citation Cy', score: 96, trust: 94, earnings: '1,260 TOK', ribbon: 'Top notice' },
-  { name: 'Alpha June', score: 94, trust: 91, earnings: '1,120 TOK', ribbon: 'Fast read' },
-  { name: 'Peer Piper', score: 92, trust: 89, earnings: '980 TOK', ribbon: 'Consensus' },
-  { name: 'Signal Sera', score: 89, trust: 87, earnings: '860 TOK', ribbon: 'Steady' },
+  { name: 'Citation Cy', score: 96, reputation: 94, earnings: '1,260 TOK', ribbon: 'Top notice' },
+  { name: 'Alpha June', score: 94, reputation: 91, earnings: '1,120 TOK', ribbon: 'Fast read' },
+  { name: 'Peer Piper', score: 92, reputation: 89, earnings: '980 TOK', ribbon: 'Consensus' },
+  { name: 'Signal Sera', score: 89, reputation: 87, earnings: '860 TOK', ribbon: 'Steady' },
 ];
 
 const prizeNotes = [
@@ -80,7 +80,7 @@ export default function DashboardPage() {
                   <span className="dashboard-ranking-row__name">{node.name}</span>
                   <span className="dashboard-ranking-row__ribbon">{node.ribbon}</span>
                   <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--score">{node.score}</span>
-                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--trust">{node.trust}%</span>
+                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--reputation">{node.reputation}%</span>
                   <span className="dashboard-ranking-row__earnings">{node.earnings}</span>
                 </div>
               ))}

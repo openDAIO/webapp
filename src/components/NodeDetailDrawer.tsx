@@ -55,8 +55,8 @@ export default function NodeDetailDrawer({
   const reviewerAssets = ASSET_PATHS.characters.reviewers[node.id];
   const profileImage = reviewerAssets?.idle ?? node.avatar ?? reviewerAssets?.portrait;
   const fallbackAvatar = node.avatar ?? reviewerAssets?.portrait ?? reviewerAssets?.idle;
-  const trustDelta = node.trustAfter - node.trustBefore;
-  const trustDeltaLabel = trustDelta > 0 ? `+${trustDelta}` : `${trustDelta}`;
+  const reputationDelta = node.reputationAfter - node.reputationBefore;
+  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
 
   return (
     <>
@@ -129,8 +129,8 @@ export default function NodeDetailDrawer({
                   <h2>{node.name}</h2>
                   <div className="node-report-scoreline">
                     <span>Final Score {node.finalScore}</span>
-                    <span className={trustDelta > 0 ? 'node-report-trust-up' : trustDelta < 0 ? 'node-report-trust-down' : ''}>
-                      Trust {trustDeltaLabel}
+                    <span className={reputationDelta > 0 ? 'node-report-reputation-up' : reputationDelta < 0 ? 'node-report-reputation-down' : ''}>
+                      Reputation {reputationDeltaLabel}
                     </span>
                   </div>
                 </div>
@@ -269,29 +269,77 @@ function RoundHistoryScrollPanel({ children }: { children: ReactNode }) {
 }
 
 function NodeSummaryCard({ node, tokenFlow }: { node: NodeEvaluationResult; tokenFlow: number }) {
-  const trustDelta = node.trustAfter - node.trustBefore;
-  const trustDeltaLabel = trustDelta > 0 ? `+${trustDelta}` : `${trustDelta}`;
+  const reputationDelta = node.reputationAfter - node.reputationBefore;
+  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
+  const reviewNode = node.reviewNode;
 
   return (
-    <section className="node-report-section">
-      <div className="node-report-section-heading">
-        <h3>Score Sheet</h3>
-      </div>
-      <div className="node-report-metric-grid">
-        <Info label="Status" value={node.status.replace('_', ' ')} />
-        <Info label="Final Score" value={node.finalScore} />
-        <Info label="Trust Change" value={trustDeltaLabel} tone={trustDelta > 0 ? 'positive' : trustDelta < 0 ? 'negative' : undefined} />
-        <Info label="Stake" value={`${node.stakeAmount.toFixed(1)} TOK`} />
-        <Info label="Bounty" value={`${node.bountyRewardAmount.toFixed(2)} USDT`} />
-      </div>
-      <div className="node-report-ledger-line">
-        <span>Stake Flow</span>
-        <div>
-          <TokenFlowBadge amount={tokenFlow} />
+    <>
+      <section className="node-report-section">
+        <div className="node-report-section-heading">
+          <h3>Score Sheet</h3>
         </div>
-      </div>
-    </section>
+        <div className="node-report-metric-grid">
+          <Info label="Status" value={node.status.replace('_', ' ')} />
+          <Info label="Final Score" value={`${node.finalScore}/100`} />
+          <Info label="Reputation Change" value={reputationDeltaLabel} tone={reputationDelta > 0 ? 'positive' : reputationDelta < 0 ? 'negative' : undefined} />
+          <Info label="Stake" value={`${node.stakeAmount.toFixed(1)} TOK`} />
+          <Info label="Bounty" value={`${node.bountyRewardAmount.toFixed(2)} USDT`} />
+        </div>
+        <div className="node-report-ledger-line">
+          <span>Stake Flow</span>
+          <div>
+            <TokenFlowBadge amount={tokenFlow} />
+          </div>
+        </div>
+      </section>
+
+      {reviewNode && (
+        <section className="node-report-section">
+          <div className="node-report-section-heading">
+            <h3>Protocol Score Breakdown</h3>
+            <span>0-10000 scale</span>
+          </div>
+          <div className="node-report-metric-grid">
+            <Info label="proposalScore" value={formatProtocolScore(reviewNode.proposalScore)} />
+            <Info label="Round 1 weight" value={formatProtocolScore(reviewNode.round0?.reviewerWeight)} />
+            <Info label="Audit median" value={formatProtocolScore(reviewNode.round1?.auditScore)} />
+            <Info label="Audit reliability" value={formatProtocolScore(reviewNode.round1?.reliability)} />
+            <Info label="Round 2 weight" value={formatProtocolScore(reviewNode.round1?.reviewerWeight)} />
+            <Info label="Reputation" value={formatProtocolScore(reviewNode.round2?.reputationScore)} />
+            <Info label="Final weight" value={formatProtocolScore(reviewNode.round2?.finalWeight)} />
+            <Info label="Weighted score" value={formatProtocolScore(reviewNode.round2?.weightedScore)} />
+          </div>
+          {reviewNode.reputation?.sampleCount === 0 && (
+            <p className="node-report-narrative node-report-narrative--plain mt-3">
+              No prior samples. The current node reputation baseline was applied before final weighting.
+            </p>
+          )}
+        </section>
+      )}
+
+      {reviewNode && (
+        <section className="node-report-section">
+          <div className="node-report-section-heading">
+            <h3>Round Thought Flow</h3>
+            <span>Summary only</span>
+          </div>
+          <div className="node-report-metric-grid">
+            <Info label="Round 1" value={`Individual Review · ${formatProtocolScore(reviewNode.proposalScore)}`} />
+            <Info label="Round 2" value={`Peer Audit · ${formatProtocolScore(reviewNode.round1?.reviewerWeight)}`} />
+            <Info label="Round 3" value={`Reputation Weighted · ${formatProtocolScore(reviewNode.round2?.finalWeight)}`} />
+          </div>
+          <p className="node-report-narrative node-report-narrative--plain mt-3">
+            The reviewer moved from an independent proposal score, to peer-audit weighting, then to reputation-adjusted final contribution.
+          </p>
+        </section>
+      )}
+    </>
   );
+}
+
+function formatProtocolScore(value?: number) {
+  return typeof value === 'number' ? value.toLocaleString() : '--';
 }
 
 function Info({ label, value, tone }: { label: string; value: string | number; tone?: 'positive' | 'negative' }) {
