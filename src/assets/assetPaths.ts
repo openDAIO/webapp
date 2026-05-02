@@ -142,6 +142,10 @@ export const ASSET_PATHS = {
     ...roomAssets,
   },
   ui: {
+    logo: {
+      mark: '/assets/ui/logo/openDAIO_logo02.svg',
+      wordmark: '/assets/ui/logo/openDAIO_logo01.svg'
+    },
     panels: {
       submission: '/assets/ui/panels/submission-frame.png',
       log: '/assets/ui/panels/log-frame.png',

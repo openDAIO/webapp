@@ -96,6 +96,98 @@
     text-shadow: 2px 2px 0px rgba(0,0,0,0.5);
   }
 
+  .brand-lockup {
+    display: inline-flex;
+    align-items: center;
+    gap: clamp(0.38rem, 0.72vw, 0.54rem);
+    vertical-align: top;
+    filter: drop-shadow(2px 2px 0 rgba(63, 40, 24, 0.38));
+  }
+
+  .brand-lockup__mark {
+    width: clamp(2rem, 3.2vw, 2.8rem);
+    height: auto;
+    flex: 0 0 auto;
+    object-fit: contain;
+  }
+
+  .brand-lockup__wordmark {
+    width: clamp(8.5rem, 13vw, 11.5rem);
+    max-width: 100%;
+    height: auto;
+    flex: 0 1 auto;
+    object-fit: contain;
+  }
+
+  .navbar-brand-lockup {
+    max-width: min(46vw, 16.75rem);
+    margin-left: -0.9rem;
+  }
+
+  .navbar-brand-lockup .brand-lockup__mark {
+    width: clamp(2.7rem, 4vw, 3.2rem);
+  }
+
+  .navbar-brand-lockup .brand-lockup__wordmark {
+    width: clamp(9.4rem, 14vw, 11.9rem);
+    transform: translateY(0.28rem);
+  }
+
+  .nav-route-button {
+    min-width: 8.25rem;
+  }
+
+  .nav-wallet-button {
+    width: 10.25rem;
+  }
+
+  .nav-wallet-button__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 620px) {
+    .app-navbar {
+      gap: 0.5rem;
+      padding-inline: 0.75rem;
+    }
+
+    .app-navbar__actions {
+      gap: 0.5rem;
+    }
+
+    .navbar-brand-lockup {
+      max-width: 10.5rem;
+      gap: 0.28rem;
+      margin-left: -0.45rem;
+    }
+
+    .navbar-brand-lockup .brand-lockup__mark {
+      width: 2.1rem;
+    }
+
+    .navbar-brand-lockup .brand-lockup__wordmark {
+      width: 7.65rem;
+      transform: translateY(0.18rem);
+    }
+
+    .nav-route-button {
+      min-width: 2.85rem;
+      padding-inline: 0.72rem;
+    }
+
+    .nav-route-button__label {
+      display: none;
+    }
+
+    .nav-wallet-button {
+      width: 9.45rem;
+      padding-inline: 0.7rem;
+    }
+  }
+
   .pixel-frame {
     @apply relative border-0;
     isolation: isolate;
