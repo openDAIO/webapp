@@ -309,6 +309,156 @@
     box-shadow: -18px 0 #f0c76b, -32px 0 #9ed66f;
   }
 
+  .node-selection-scene__wash {
+    background:
+      linear-gradient(180deg, rgba(237, 245, 250, 0.08), rgba(21, 34, 49, 0.12)),
+      repeating-linear-gradient(0deg, rgba(159, 248, 255, 0.1) 0 1px, transparent 1px 8px);
+    mix-blend-mode: multiply;
+  }
+
+  .node-selection-status {
+    text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.5);
+  }
+
+  .node-bottle {
+    width: 96px;
+    min-height: 118px;
+    image-rendering: pixelated;
+  }
+
+  .node-bottle__aura {
+    position: absolute;
+    left: 50%;
+    top: 34px;
+    z-index: -1;
+    width: 78px;
+    height: 72px;
+    border: 3px solid transparent;
+    background:
+      linear-gradient(90deg, transparent 0 8px, rgba(159, 248, 255, 0.16) 8px calc(100% - 8px), transparent calc(100% - 8px)),
+      linear-gradient(0deg, transparent 0 8px, rgba(159, 248, 255, 0.14) 8px calc(100% - 8px), transparent calc(100% - 8px));
+    opacity: 0.25;
+    transform: translate(-50%, -50%);
+  }
+
+  .node-bottle__sprite-wrap {
+    position: relative;
+    display: flex;
+    width: 72px;
+    height: 72px;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(4px 5px 0 rgba(38, 33, 29, 0.28));
+  }
+
+  .node-bottle__sprite {
+    width: 72px;
+    height: 72px;
+    object-fit: contain;
+  }
+
+  .node-bottle__fallback {
+    display: block;
+    width: 34px;
+    height: 34px;
+    border: 3px solid #fff8e6;
+    border-radius: 999px;
+    box-shadow: 3px 3px 0 rgba(80, 53, 33, 0.22);
+  }
+
+  .node-bottle__name {
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .node-bottle__badge {
+    position: relative;
+    z-index: 3;
+    display: inline-flex;
+    min-width: 74px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    margin-top: 4px;
+    border: 2px solid #07111f;
+    background: #2d3a45;
+    color: #d9f7ff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    text-shadow: 1px 1px 0 #07111f;
+    box-shadow:
+      inset 0 0 0 1px rgba(159, 248, 255, 0.18),
+      2px 2px 0 rgba(0, 0, 0, 0.28);
+  }
+
+  .node-bottle--selecting {
+    filter: brightness(1.06);
+  }
+
+  .node-bottle--selecting .node-bottle__sprite-wrap {
+    animation: node-selection-hop 0.72s steps(2, end) infinite;
+    animation-delay: var(--node-selection-delay);
+  }
+
+  .node-bottle--selecting .node-bottle__aura {
+    border-color: rgba(159, 248, 255, 0.5);
+    animation: node-selection-blink 0.36s steps(2, end) infinite;
+    animation-delay: var(--node-selection-delay);
+  }
+
+  .node-bottle--selecting .node-bottle__badge {
+    border-color: #2f5d7e;
+    background: #edf5fa;
+    color: #17384b;
+    text-shadow: none;
+  }
+
+  .node-bottle--selected {
+    filter: brightness(1.18) saturate(1.08);
+  }
+
+  .node-bottle--selected .node-bottle__aura {
+    border-color: #ffd98a;
+    background:
+      linear-gradient(90deg, transparent 0 8px, rgba(255, 217, 138, 0.42) 8px calc(100% - 8px), transparent calc(100% - 8px)),
+      linear-gradient(0deg, transparent 0 8px, rgba(159, 248, 255, 0.24) 8px calc(100% - 8px), transparent calc(100% - 8px));
+    opacity: 0.95;
+    box-shadow:
+      0 0 0 3px rgba(7, 17, 31, 0.5),
+      0 0 18px rgba(255, 217, 138, 0.65);
+    animation: node-selected-glow 1.2s steps(2, end) infinite;
+  }
+
+  .node-bottle--selected .node-bottle__badge {
+    border-color: #5f4328;
+    background: #e5b45f;
+    color: #23351f;
+    text-shadow: none;
+  }
+
+  .node-bottle--standby {
+    opacity: 0.48;
+    filter: grayscale(0.35) brightness(0.72);
+  }
+
+  .node-bottle--standby .node-bottle__badge {
+    border-color: #6b563f;
+    background: #ead9b1;
+    color: #6b563f;
+    text-shadow: none;
+  }
+
+  .node-selection-button {
+    text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.45);
+  }
+
+  .node-selection-controls--status {
+    top: 6rem;
+  }
+
   .scoreboard-hanger {
     position: absolute;
     top: -30px;
@@ -1423,6 +1573,27 @@
     20%, 50%, 80% {
       box-shadow: 0 0 16px rgba(241, 196, 109, 0.72);
       filter: brightness(1.35);
+    }
+  }
+
+  @keyframes node-selection-hop {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+  }
+
+  @keyframes node-selection-blink {
+    0%, 49% { opacity: 0.18; }
+    50%, 100% { opacity: 0.82; }
+  }
+
+  @keyframes node-selected-glow {
+    0%, 100% {
+      filter: brightness(1);
+      transform: translate(-50%, -50%) scale(1);
+    }
+    50% {
+      filter: brightness(1.24);
+      transform: translate(-50%, -50%) scale(1.06);
     }
   }
 

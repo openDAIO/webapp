@@ -1,6 +1,7 @@
 
 export type SimulationPhase =
   | 'IDLE'
+  | 'SELECTION'
   | 'MOVING_TO_ROOMS'
   | 'ROUND_1'
   | 'ROUND_2_STARTING'
@@ -18,6 +19,8 @@ export type NodeStatus =
   | 'RETURNING'
   | 'REWARDED'
   | 'SLASHED';
+
+export type NodeSelectionStatus = 'selected' | 'standby';
 
 export interface RoundScore {
   round: number;
@@ -113,6 +116,8 @@ export interface Coordinates {
 export interface AICharacter {
   id: string;
   name: string;
+  avatar?: string;
+  sprite?: string;
   color: string;
   emoji: string;
   speed: number;
@@ -124,6 +129,8 @@ export interface AICharacter {
   scoreHistory: RoundScore[];
   lastScore?: number;
   isOutlier?: boolean;
+  selected: boolean;
+  selectionStatus: NodeSelectionStatus;
   status: NodeStatus;
   position: Coordinates;
   idlePosition: Coordinates;

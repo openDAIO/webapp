@@ -87,11 +87,15 @@ export function buildAICharactersForRoom(roomId: ActiveReviewRoomId): AICharacte
     return {
       id: character.id,
       name: character.label,
+      avatar: character.assets.portrait,
+      sprite: character.assets.idle,
       ...profile,
       roomPosition: {
         ...getRoomPositionForSlot(assignment.labSlot),
       },
       scoreHistory: [],
+      selected: false,
+      selectionStatus: 'standby',
       status: 'IDLE',
       position: idlePosition,
       idlePosition,

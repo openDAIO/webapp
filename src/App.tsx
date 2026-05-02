@@ -23,6 +23,7 @@ import Navbar from './components/Navbar';
 import DashboardPage from './components/DashboardPage';
 import CommonsPage from './components/CommonsPage';
 import LoadingTransition from './components/LoadingTransition';
+import NodeSelectionScene from './components/NodeSelectionScene';
 import NodeDetailDrawer from './components/NodeDetailDrawer';
 import ConversationDrawer, { type ConversationDrawerData } from './components/ConversationDrawer';
 import ThinkingDrawer from './components/ThinkingDrawer';
@@ -31,6 +32,12 @@ import { ActiveReviewRoomId, REVIEW_ROOMS } from './components/RoomSelectionPane
 import { getRoomConfig, getCharacterTarget, type RoomConfigEntry } from './constants/roomConfig';
 import { REVIEW_ROOM_SCENES } from './constants/reviewRoomScenes';
 import { ASSET_PATHS } from './assets/assetPaths';
+import {
+  DEFAULT_SELECTED_NODE_COUNT,
+  getReviewParticipants,
+  getSelectedReviewNodes,
+  selectReviewNodes,
+} from './utils/nodeSelection';
 
 type AppPage = 'dashboard' | 'commons' | 'loading' | 'room';
 
@@ -64,6 +71,8 @@ function resetCharacter(char: AICharacter): AICharacter {
     position: char.idlePosition,
     lastScore: undefined,
     isOutlier: false,
+    selected: false,
+    selectionStatus: 'standby',
     scoreHistory: [],
     scoreReasoning: undefined,
     discussionSummary: undefined,
@@ -427,6 +436,7 @@ function buildRoomFinalInputs(characters: AICharacter[]): NodeEvaluationInput[] 
     return {
       id: character.id,
       name: character.name,
+      avatar: character.avatar ?? ASSET_PATHS.characters.reviewers[character.id]?.portrait,
       finalScore,
       trustBefore: character.trustScore,
       stakeAmount: character.stakeAmount,
@@ -570,6 +580,7 @@ export default function App() {
   const [confirmArmed, setConfirmArmed] = useState(false);
   const [roundIntro, setRoundIntro] = useState<{ round: 1 | 2 | 3; id: number } | null>(null);
   const [roundResultHoldRound, setRoundResultHoldRound] = useState<1 | 2 | 3 | null>(null);
+  const [isNodeSelectionReady, setIsNodeSelectionReady] = useState(false);
   const nodeChat = useNodeChat(evaluationId);
   const charactersRef = useRef(characters);
   const activeConversationsRef = useRef(activeConversations);
@@ -577,6 +588,7 @@ export default function App() {
   const selectedThinkingNodeIdRef = useRef(selectedThinkingNodeId);
   const meetingTimersRef = useRef<number[]>([]);
   const sideboardActivityRef = useRef<HTMLDivElement | null>(null);
+  const selectionCompletionLoggedRef = useRef(false);
 
   const selectedNodeResult = useMemo(
     () => finalResult?.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -592,9 +604,12 @@ export default function App() {
     () => buildAICharactersForRoom(loadingRoom).map(resetCharacter),
     [loadingRoom],
   );
+  const reviewParticipants = useMemo(() => getReviewParticipants(characters), [characters]);
+  const sceneCharacters = phase === 'IDLE' || phase === 'SELECTION' ? characters : reviewParticipants;
+  const sideboardCharacters = phase === 'IDLE' || phase === 'SELECTION' ? characters : reviewParticipants;
   const selectedThinkingNode = useMemo(
-    () => characters.find((character) => character.id === selectedThinkingNodeId && character.status === 'THINKING') ?? null,
-    [characters, selectedThinkingNodeId],
+    () => reviewParticipants.find((character) => character.id === selectedThinkingNodeId && character.status === 'THINKING') ?? null,
+    [reviewParticipants, selectedThinkingNodeId],
   );
   const isEvaluationInProgress = phase !== 'IDLE' || Boolean(roomReviewBounty) || Boolean(finalResult);
 
@@ -678,6 +693,8 @@ export default function App() {
     setConfirmArmed(false);
     setRoundIntro(null);
     setRoundResultHoldRound(null);
+    setIsNodeSelectionReady(false);
+    selectionCompletionLoggedRef.current = false;
     setCharacters(buildAICharactersForRoom(roomId).map(resetCharacter));
   }, [clearMeetingTimers, clearRoundResultHoldTimer, selectedRoom]);
 
@@ -798,11 +815,49 @@ export default function App() {
     addLog('Evaluation report downloaded.');
   };
 
-  const handleSubmit = (title: string, link = '') => {
-    setEvaluationId(`eval_${Date.now()}`);
+  const completeNodeSelection = useCallback(() => {
+    setIsNodeSelectionReady(true);
+
+    if (selectionCompletionLoggedRef.current) return;
+    selectionCompletionLoggedRef.current = true;
+
+    const selectedNames = getSelectedReviewNodes(charactersRef.current)
+      .map((character) => character.name)
+      .join(', ');
+
+    addLog(`${DEFAULT_SELECTED_NODE_COUNT} review nodes selected${selectedNames ? `: ${selectedNames}` : ''}.`);
+  }, [addLog]);
+
+  useEffect(() => {
+    if (phase !== 'SELECTION' || isNodeSelectionReady) return undefined;
+
+    const timer = window.setTimeout(completeNodeSelection, 1800);
+    return () => window.clearTimeout(timer);
+  }, [completeNodeSelection, isNodeSelectionReady, phase]);
+
+  const startSelectedReview = useCallback(() => {
+    if (phase !== 'SELECTION' || !isNodeSelectionReady) return;
+
+    const participants = getReviewParticipants(charactersRef.current);
     setPhase('MOVING_TO_ROOMS');
     setCurrentRound(1);
     setRoundIntro({ round: 1, id: Date.now() });
+    setRoundResultHoldRound(null);
+    addLog(`Round 1 queued for ${participants.length} selected review nodes.`);
+  }, [addLog, isNodeSelectionReady, phase]);
+
+  const handleSubmit = (title: string, link = '') => {
+    const nextCharacters = selectReviewNodes(
+      charactersRef.current.map(resetCharacter),
+      DEFAULT_SELECTED_NODE_COUNT,
+    );
+
+    setEvaluationId(`eval_${Date.now()}`);
+    setPhase('SELECTION');
+    setCurrentRound(1);
+    setIsNodeSelectionReady(false);
+    selectionCompletionLoggedRef.current = false;
+    setRoundIntro(null);
     setRoundResultHoldRound(null);
     setShowChart(false);
     setFinalResult(null);
@@ -822,19 +877,26 @@ export default function App() {
     if (roomReviewBounty) {
       addLog(`Review bounty funded: ${roomReviewBounty.amount.toFixed(2)} ${roomReviewBounty.asset} on ${roomReviewBounty.network}.`);
     }
-    addLog('Round 1 queued. Nodes will move after the round start signal.');
+    addLog(`Selecting ${DEFAULT_SELECTED_NODE_COUNT} review nodes from ${nextCharacters.length} candidates.`);
 
-    setCharacters((prev) =>
-      prev.map((character) => ({
-        ...resetCharacter(character),
-      })),
-    );
+    charactersRef.current = nextCharacters;
+    setCharacters(nextCharacters);
   };
 
   const applyRoundScores = useCallback((round: number) => {
     const roundConversations = activeConversationsRef.current.filter((conversation) => conversation.round === round);
-    setCharacters((prev) =>
-      prev.map((character) => {
+    setCharacters((prev) => {
+      const participantIds = new Set(getReviewParticipants(prev).map((character) => character.id));
+
+      return prev.map((character) => {
+        if (!participantIds.has(character.id)) {
+          return {
+            ...character,
+            status: 'IDLE',
+            position: character.idlePosition,
+          };
+        }
+
         const conversation = findConversationForNode(roundConversations, character.id);
         const entry = buildRoundScore(character, round, conversation);
 
@@ -846,23 +908,35 @@ export default function App() {
           scoreReasoning: entry.reasoning,
           discussionSummary: entry.discussion,
         };
-      }),
-    );
+      });
+    });
     addLog(`Round ${round} scores submitted to the board.`);
   }, [addLog]);
 
   const finalizeScores = useCallback(() => {
-    const roomFinalInputs = buildRoomFinalInputs(charactersRef.current);
+    const activeCharacters = getReviewParticipants(charactersRef.current);
+    const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
+    const roomFinalInputs = buildRoomFinalInputs(activeCharacters);
     const calculated = buildNodeResultRows(roomFinalInputs, undefined, roomReviewBounty?.amount ?? 0);
     setFinalResult(calculated);
 
     setCharacters((prev) =>
       prev.map((character) => {
         const result = calculated.nodes.find((node) => node.id === character.id);
+        if (!activeCharacterIds.has(character.id)) {
+          return {
+            ...character,
+            status: 'IDLE',
+            position: character.idlePosition,
+            isOutlier: false,
+            lastScore: undefined,
+          };
+        }
+
         if (!result) {
           return {
             ...character,
-            status: 'REWARDED',
+            status: 'IDLE',
             position: character.idlePosition,
           };
         }
@@ -922,11 +996,13 @@ export default function App() {
   };
 
   const startDiscussionRound = useCallback((round: 2 | 3) => {
-    const plan = buildDiscussionPlan(charactersRef.current, round);
-    const currentCharactersById = new Map<string, AICharacter>(charactersRef.current.map((character) => [character.id, character]));
+    const activeCharacters = getReviewParticipants(charactersRef.current);
+    const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
+    const plan = buildDiscussionPlan(activeCharacters, round);
+    const currentCharactersById = new Map<string, AICharacter>(activeCharacters.map((character) => [character.id, character]));
     const nextPositionsById = new Map<string, Coordinates>();
 
-    charactersRef.current.forEach((character) => {
+    activeCharacters.forEach((character) => {
       const pairIndex = plan.conversations.findIndex((conversation) => conversation.participantIds.includes(character.id));
       const conversation = pairIndex >= 0 ? plan.conversations[pairIndex] : undefined;
       const participantIndex = conversation?.participantIds.indexOf(character.id) ?? -1;
@@ -971,6 +1047,14 @@ export default function App() {
 
     setCharacters((prev) =>
       prev.map((character) => {
+        if (!activeCharacterIds.has(character.id)) {
+          return {
+            ...character,
+            status: 'IDLE',
+            position: character.idlePosition,
+          };
+        }
+
         const pairIndex = plan.conversations.findIndex((conversation) => conversation.participantIds.includes(character.id));
         const conversation = pairIndex >= 0 ? plan.conversations[pairIndex] : undefined;
         const participantIndex = conversation?.participantIds.indexOf(character.id) ?? -1;
@@ -1080,21 +1164,36 @@ export default function App() {
 
     if (phase === 'MOVING_TO_ROOMS') {
       addLog('Round 1 started. Nodes are moving to their labs.');
+      const activeCharacters = getReviewParticipants(charactersRef.current);
+      const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
       const moveDuration = Math.max(
-        ...charactersRef.current.map((character) => movementDurationMs(character, getCharacterTarget(character.id, selectedRoom))),
+        0,
+        ...activeCharacters.map((character) => movementDurationMs(character, getCharacterTarget(character.id, selectedRoom))),
       );
 
       setCharacters((prev) =>
-        prev.map((character) => ({
-          ...character,
-          status: 'MOVING',
-          position: getCharacterTarget(character.id, selectedRoom),
-        })),
+        prev.map((character) => activeCharacterIds.has(character.id)
+          ? {
+              ...character,
+              status: 'MOVING',
+              position: getCharacterTarget(character.id, selectedRoom),
+            }
+          : {
+              ...character,
+              status: 'IDLE',
+              position: character.idlePosition,
+            }),
       );
 
       const timer = window.setTimeout(() => {
         setPhase('ROUND_1');
-        setCharacters((prev) => prev.map((character) => ({ ...character, status: 'THINKING' })));
+        setCharacters((prev) => {
+          const participantIds = new Set(getReviewParticipants(prev).map((character) => character.id));
+
+          return prev.map((character) => participantIds.has(character.id)
+            ? { ...character, status: 'THINKING' }
+            : character);
+        });
         addLog('Round 1 started. Nodes are reviewing independently.');
       }, moveDuration + 120);
       return () => window.clearTimeout(timer);
@@ -1161,7 +1260,7 @@ export default function App() {
   }, [addLog, advanceFromRound2, advanceFromRound3, applyRoundScores, clearMeetingTimers, finalizeScores, phase, roundIntro, roundResultHoldRound, selectedRoom, startDiscussionRound]);
 
   const isFinalResultVisible = phase === 'EVALUATED' && Boolean(finalResult);
-  const hasReviewScores = characters.some((character) => typeof character.lastScore === 'number');
+  const hasReviewScores = reviewParticipants.some((character) => typeof character.lastScore === 'number');
   const isRoundBillboardPhase = (
     phase === 'ROUND_1' ||
     phase === 'ROUND_2_STARTING' ||
@@ -1235,7 +1334,7 @@ export default function App() {
               ))}
 
               <Billboard
-                characters={characters}
+                characters={reviewParticipants}
                 visible={showReviewBillboard}
                 showDetails={showReviewBillboard || showChart}
                 finalSummary={finalResult?.summary}
@@ -1246,6 +1345,17 @@ export default function App() {
                 phase={phase}
                 currentRound={currentRound}
               />
+
+              <AnimatePresence>
+                {phase === 'SELECTION' && (
+                  <NodeSelectionScene
+                    nodes={characters}
+                    isComplete={isNodeSelectionReady}
+                    onSkip={completeNodeSelection}
+                    onStartReview={startSelectedReview}
+                  />
+                )}
+              </AnimatePresence>
 
               <AnimatePresence>
                 {roundIntro && (
@@ -1270,73 +1380,75 @@ export default function App() {
                 )}
               </AnimatePresence>
 
-              <div className="absolute inset-0 pointer-events-none">
-                {characters.map((character) => (
-                  <div key={character.id} className="pointer-events-auto">
-                    {(() => {
-                      const result = finalResult?.nodes.find((node) => node.id === character.id);
-                      const tokenFlow = result ? result.rewardAmount - result.slashAmount : 0;
-                      const activeConversation = findConversationForNode(activeConversations, character.id);
-                      const hasMetPartner = Boolean(activeConversation && metConversationIds.includes(activeConversation.id));
-                      const characterAnchorStyle = {
-                        left: `calc(${character.position.x}% + ${character.position.offsetX || 0}px)`,
-                        top: `calc(${character.position.y}% + ${character.position.offsetY || 0}px)`,
-                      };
+              {phase !== 'SELECTION' && (
+                <div className="absolute inset-0 pointer-events-none">
+                  {sceneCharacters.map((character) => (
+                    <div key={character.id} className="pointer-events-auto">
+                      {(() => {
+                        const result = finalResult?.nodes.find((node) => node.id === character.id);
+                        const tokenFlow = result ? result.rewardAmount - result.slashAmount : 0;
+                        const activeConversation = findConversationForNode(activeConversations, character.id);
+                        const hasMetPartner = Boolean(activeConversation && metConversationIds.includes(activeConversation.id));
+                        const characterAnchorStyle = {
+                          left: `calc(${character.position.x}% + ${character.position.offsetX || 0}px)`,
+                          top: `calc(${character.position.y}% + ${character.position.offsetY || 0}px)`,
+                        };
 
-                      return (
-                        <div className={result?.isOutlier ? 'node--slashed' : result ? 'node--rewarded' : undefined}>
-                          <Character
-                            data={character}
-                            onClick={() => inspectSceneNode(character.id)}
-                            isSelected={
-                              selectedNodeId === character.id ||
-                              selectedThinkingNodeId === character.id ||
-                              Boolean(selectedConversation?.participantIds.includes(character.id))
-                            }
-                            showTalkingBubble={hasMetPartner}
-                            showThoughtCloud={character.status === 'THINKING'}
-                          />
-                          <AnimatePresence>
-                            {roundResultHoldRound && (
-                              <RoundScorePopup
-                                character={character}
-                                round={roundResultHoldRound}
-                                style={{
-                                  left: characterAnchorStyle.left,
-                                  top: `calc(${characterAnchorStyle.top} - 82px)`,
-                                }}
+                        return (
+                          <div className={result?.isOutlier ? 'node--slashed' : result ? 'node--rewarded' : undefined}>
+                            <Character
+                              data={character}
+                              onClick={() => inspectSceneNode(character.id)}
+                              isSelected={
+                                selectedNodeId === character.id ||
+                                selectedThinkingNodeId === character.id ||
+                                Boolean(selectedConversation?.participantIds.includes(character.id))
+                              }
+                              showTalkingBubble={hasMetPartner}
+                              showThoughtCloud={character.status === 'THINKING'}
+                            />
+                            <AnimatePresence>
+                              {roundResultHoldRound && (
+                                <RoundScorePopup
+                                  character={character}
+                                  round={roundResultHoldRound}
+                                  style={{
+                                    left: characterAnchorStyle.left,
+                                    top: `calc(${characterAnchorStyle.top} - 82px)`,
+                                  }}
+                                />
+                              )}
+                            </AnimatePresence>
+                            {isFinalResultVisible && result && result.isOutlier && (
+                              <ResultExplosionSequence
+                                src={ASSET_PATHS.effects.explosion}
+                                baseStyle={characterAnchorStyle}
                               />
                             )}
-                          </AnimatePresence>
-                          {isFinalResultVisible && result && result.isOutlier && (
-                            <ResultExplosionSequence
-                              src={ASSET_PATHS.effects.explosion}
-                              baseStyle={characterAnchorStyle}
-                            />
-                          )}
-                          {isFinalResultVisible && result && !result.isOutlier && (
-                            <ResultSparkleSequence
-                              src={ASSET_PATHS.effects.sparkle}
-                              baseStyle={characterAnchorStyle}
-                            />
-                          )}
-                          {isFinalResultVisible && result && tokenFlow !== 0 && (
-                            <div className={`absolute z-50 -translate-x-1/2 text-xs font-bold ${tokenFlow > 0 ? 'token-float--gain' : 'token-float--loss'}`}
-                              style={{
-                                left: characterAnchorStyle.left,
-                                top: `calc(${characterAnchorStyle.top} - 54px)`,
-                              }}
-                            >
-                              {tokenFlow > 0 ? '+' : ''}
-                              {tokenFlow.toFixed(1)} TOK
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                ))}
-              </div>
+                            {isFinalResultVisible && result && !result.isOutlier && (
+                              <ResultSparkleSequence
+                                src={ASSET_PATHS.effects.sparkle}
+                                baseStyle={characterAnchorStyle}
+                              />
+                            )}
+                            {isFinalResultVisible && result && tokenFlow !== 0 && (
+                              <div className={`absolute z-50 -translate-x-1/2 text-xs font-bold ${tokenFlow > 0 ? 'token-float--gain' : 'token-float--loss'}`}
+                                style={{
+                                  left: characterAnchorStyle.left,
+                                  top: `calc(${characterAnchorStyle.top} - 54px)`,
+                                }}
+                              >
+                                {tokenFlow > 0 ? '+' : ''}
+                                {tokenFlow.toFixed(1)} TOK
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="pointer-events-none absolute bottom-6 right-6 z-[75] flex flex-col items-end gap-2">
                 {isFinalResultVisible && confirmArmed && (
@@ -1453,7 +1565,7 @@ export default function App() {
                     transition={{ duration: 0.2, ease: 'easeOut' }}
                     className="flex min-h-0 flex-1 flex-col gap-4"
                   >
-                    <TrustScorePanel characters={characters} />
+                    <TrustScorePanel characters={sideboardCharacters} />
                     <div className="min-h-0 flex-1">
                       <LogPanel logs={logs} />
                     </div>
