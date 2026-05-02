@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import {
   ArrowLeft,
   ArrowRightLeft,
   CircleDollarSign,
   Coins,
+  FileText,
   Loader2,
   LockKeyhole,
   Upload,
   Wallet,
+  X,
   Zap,
 } from 'lucide-react';
 import PixelFrame, { PixelFrameChrome } from './PixelFrame';
@@ -66,10 +68,33 @@ function ethPaidForUsdaioTarget(usdaio: number) {
 const MOCK_USDAIO_BALANCE = 1250.0;
 const SCANNER_IDLE_SRC = '/assets/submission-scanner/file-upload-scanner.png';
 const SCANNER_SUBMITTING_SRC = '/assets/submission-scanner/file-upload-scanner-submit.gif';
+const PAPER_FILE_ACCEPT = '.pdf,.doc,.docx,.md,.txt,application/pdf,text/markdown,text/plain';
 
 function buildMockTxHash() {
   const chars = '0123456789abcdef';
   return `0x${Array.from({ length: 64 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')}`;
+}
+
+function fileNameToPaperTitle(fileName: string) {
+  return fileName
+    .replace(/\.[^.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+}
+
+function formatFileSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+
+  const units = ['B', 'KB', 'MB', 'GB'] as const;
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(unitIndex === 0 || value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 export default function ReviewBountyGateOverlay({
@@ -90,13 +115,14 @@ export default function ReviewBountyGateOverlay({
   const [paymentAsset, setPaymentAsset] = useState<PaymentAsset>('USDAIO');
   const [paymentStep, setPaymentStep] = useState<PaymentStep>('idle');
   const [txHash, setTxHash] = useState('');
-  const [paperTitle, setPaperTitle] = useState('');
-  const [paperLink, setPaperLink] = useState('');
+  const [paperFile, setPaperFile] = useState<File | null>(null);
+  const [isPaperDragActive, setIsPaperDragActive] = useState(false);
   const [isPaperSubmitting, setIsPaperSubmitting] = useState(false);
   const [scannerImageError, setScannerImageError] = useState(false);
   const [bountyUsdaio, setBountyUsdaio] = useState(() => ROOM_BOUNTY_USDAIO[roomId]);
   /** Rate row: toggle quote direction (1 ETH → USDAIO vs 1 USDAIO → ETH). */
   const [invertRateQuote, setInvertRateQuote] = useState(false);
+  const paperFileInputRef = useRef<HTMLInputElement | null>(null);
   const timersRef = useRef<number[]>([]);
 
   useEffect(() => {
@@ -136,6 +162,44 @@ export default function ReviewBountyGateOverlay({
   const handleAssetChange = (asset: PaymentAsset) => {
     if (paymentStep !== 'idle' || asset === paymentAsset) return;
     setPaymentAsset(asset);
+  };
+
+  const handlePaperFileSelect = (file: File | null) => {
+    if (!file) return;
+
+    setPaperFile(file);
+  };
+
+  const handlePaperFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    handlePaperFileSelect(event.target.files?.[0] ?? null);
+  };
+
+  const handlePaperFileRemove = () => {
+    setPaperFile(null);
+    setIsPaperDragActive(false);
+    if (paperFileInputRef.current) {
+      paperFileInputRef.current.value = '';
+    }
+  };
+
+  const handlePaperFileDragOver = (event: DragEvent<HTMLButtonElement>) => {
+    if (isPaperSubmitting) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsPaperDragActive(true);
+  };
+
+  const handlePaperFileDragLeave = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    setIsPaperDragActive(false);
+  };
+
+  const handlePaperFileDrop = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    if (isPaperSubmitting) return;
+
+    setIsPaperDragActive(false);
+    handlePaperFileSelect(event.dataTransfer.files?.[0] ?? null);
   };
 
   const helperText = useMemo(() => {
@@ -193,13 +257,14 @@ export default function ReviewBountyGateOverlay({
   };
 
   const handlePaperSubmit = () => {
-    const trimmedTitle = paperTitle.trim();
-    if (!trimmedTitle || isPaperSubmitting) return;
+    if (!paperFile || isPaperSubmitting) return;
+
+    const paperTitle = fileNameToPaperTitle(paperFile.name) || paperFile.name;
 
     setScannerImageError(false);
     setIsPaperSubmitting(true);
     timersRef.current.push(window.setTimeout(() => {
-      onSubmitPaper(trimmedTitle, paperLink.trim());
+      onSubmitPaper(paperTitle, `${paperFile.name} (${formatFileSize(paperFile.size)})`);
     }, 1400));
   };
 
@@ -273,58 +338,86 @@ export default function ReviewBountyGateOverlay({
                 )}
               </PixelFrame>
 
-                <label className="block text-sm font-bold" htmlFor="paper-title">
-                  Paper Title
+                <label className="block text-sm font-bold" htmlFor="paper-file">
+                  Paper File
                 </label>
-                <PixelFrame
-                  className="flex items-stretch"
-                  color="#d7b98f"
-                  fillColor="#ffffff"
-                  round={2}
-                  thickness={4}
-                  outerShadowOffsetX={0}
-                  outerShadowOffsetY={0}
-                  outerShadowColor="transparent"
+                <input
+                  ref={paperFileInputRef}
+                  id="paper-file"
+                  type="file"
+                  accept={PAPER_FILE_ACCEPT}
+                  disabled={isPaperSubmitting}
+                  onChange={handlePaperFileChange}
+                  className="sr-only"
+                />
+                <button
+                  type="button"
+                  onClick={() => paperFileInputRef.current?.click()}
+                  onDragOver={handlePaperFileDragOver}
+                  onDragLeave={handlePaperFileDragLeave}
+                  onDrop={handlePaperFileDrop}
+                  disabled={isPaperSubmitting}
+                  className="pixel-frame min-h-[6.75rem] w-full px-4 py-4 text-left text-[#503521] transition-transform hover:-translate-y-0.5 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0"
+                  aria-describedby="paper-file-help"
                 >
-                  <input
-                    id="paper-title"
-                    type="text"
-                    value={paperTitle}
-                    disabled={isPaperSubmitting}
-                    onChange={(event) => setPaperTitle(event.target.value)}
-                    placeholder="Paper Title..."
-                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm font-bold text-[#503521] outline-none disabled:opacity-70"
+                  <PixelFrameChrome
+                    round={2}
+                    thickness={4}
+                    color={paperFile ? '#8ab66b' : isPaperDragActive ? '#83add0' : '#d7b98f'}
+                    fillColor={paperFile ? '#f4ffd9' : isPaperDragActive ? '#edf5fa' : '#ffffff'}
+                    innerHighlightColor="rgba(255, 255, 255, 0.42)"
+                    outerShadowOffsetX={0}
+                    outerShadowOffsetY={0}
+                    outerShadowColor="transparent"
                   />
-                </PixelFrame>
-
-                <label className="block text-sm font-bold" htmlFor="paper-link">
-                  Link / File Path
-                </label>
-                <PixelFrame
-                  className="flex items-stretch"
-                  color="#d7b98f"
-                  fillColor="#ffffff"
-                  round={2}
-                  thickness={4}
-                  outerShadowOffsetX={0}
-                  outerShadowOffsetY={0}
-                  outerShadowColor="transparent"
-                >
-                  <input
-                    id="paper-link"
-                    type="text"
-                    value={paperLink}
-                    disabled={isPaperSubmitting}
-                    onChange={(event) => setPaperLink(event.target.value)}
-                    placeholder="Optional"
-                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-[#503521] outline-none disabled:opacity-70"
-                  />
-                </PixelFrame>
+                  <span className="relative z-40 flex h-full min-w-0 items-center gap-3">
+                    <span className="flex h-12 w-12 flex-shrink-0 items-center justify-center text-[#2f5d7e]">
+                      {paperFile ? <FileText size={34} /> : <Upload size={34} />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-lg font-bold leading-none">
+                        {paperFile ? paperFile.name : 'Choose a file or drop it here'}
+                      </span>
+                      <span id="paper-file-help" className="mt-2 block text-xs font-bold text-[#6b563f]">
+                        {paperFile
+                          ? `${formatFileSize(paperFile.size)} · ready to upload`
+                          : 'PDF, DOCX, MD, or TXT'}
+                      </span>
+                    </span>
+                  </span>
+                </button>
+                {paperFile && (
+                  <div className="flex items-center justify-between gap-2 text-xs font-bold text-[#2f6f35]">
+                    <span className="min-w-0 truncate">
+                      Attached: {paperFile.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handlePaperFileRemove}
+                      disabled={isPaperSubmitting}
+                      className="pixel-frame flex h-7 w-7 flex-shrink-0 items-center justify-center text-[#5f211c] transition-transform hover:-translate-y-0.5 hover:brightness-105 disabled:opacity-50 disabled:hover:translate-y-0"
+                      aria-label="Remove selected file"
+                      title="Remove selected file"
+                    >
+                      <PixelFrameChrome
+                        round={1}
+                        thickness={3}
+                        color="#9c342d"
+                        fillColor="#f0c0b1"
+                        innerHighlightColor="rgba(255, 255, 255, 0.24)"
+                        outerShadowColor="rgba(95, 33, 28, 0.16)"
+                        outerShadowOffsetX={1}
+                        outerShadowOffsetY={1}
+                      />
+                      <X className="relative z-40" size={14} />
+                    </button>
+                  </div>
+                )}
 
               <button
                 type="button"
                 onClick={handlePaperSubmit}
-                disabled={!paperTitle.trim() || isPaperSubmitting}
+                disabled={!paperFile || isPaperSubmitting}
                 className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
               >
                 <PixelFrameChrome
@@ -346,7 +439,7 @@ export default function ReviewBountyGateOverlay({
                   ) : (
                     <>
                       <Upload size={18} />
-                      Submit Paper
+                      Upload & Submit Paper
                     </>
                   )}
                 </span>
