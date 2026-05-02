@@ -99,7 +99,7 @@ export interface FinalEvaluationSummary {
   redistributionPerNode: number;
   reviewBountyAmount: number;
   bountyPerEligibleNode: number;
-  bountyAsset: 'USDT';
+  bountyAsset: 'USDAIO';
   completedAt?: string;
 }
 

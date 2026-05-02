@@ -1,16 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CircleDollarSign, Loader2, LockKeyhole, Upload, Wallet } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowRightLeft,
+  CircleDollarSign,
+  Coins,
+  Loader2,
+  LockKeyhole,
+  Upload,
+  Wallet,
+  Zap,
+} from 'lucide-react';
 import PixelFrame, { PixelFrameChrome } from './PixelFrame';
 import { useWallet } from '../services/wallet/useWallet';
+import type { ActiveReviewRoomId } from '../constants/reviewRoomScenes';
+
+export type PaymentAsset = 'USDAIO' | 'ETH';
 
 export interface ConfirmedReviewBounty {
   amount: number;
-  asset: 'USDT';
+  asset: 'USDAIO';
   network: string;
   txHash: string;
+  paidWith?: {
+    asset: 'ETH';
+    amount: number;
+    rate: number;
+    poolFeePct: number;
+    hook: string;
+  };
 }
 
 interface ReviewBountyGateOverlayProps {
+  roomId: ActiveReviewRoomId;
   reviewBounty: ConfirmedReviewBounty | null;
   onConfirmed: (reviewBounty: ConfirmedReviewBounty) => void;
   onSubmitPaper: (title: string, link: string) => void;
@@ -19,10 +40,30 @@ interface ReviewBountyGateOverlayProps {
 
 type PaymentStep = 'idle' | 'signing' | 'confirming' | 'confirmed';
 
-const MIN_REVIEW_BOUNTY = 10;
+const ROOM_BOUNTY_USDAIO: Record<ActiveReviewRoomId, number> = {
+  paper: 10,
+  judgment: 20,
+};
 const NETWORK_FEE_NATIVE = 0.0008;
 const NETWORK_FEE_SYMBOL = 'ETH';
 const NETWORK_NAME = 'Ethereum Sepolia';
+// Uniswap V4 Hook auto-swap (mock values — replace with on-chain quoter once the hook is deployed).
+const MOCK_ETH_TO_USDAIO_RATE = 3500;
+const UNISWAP_V4_HOOK_FEE_PCT = 0.05;
+const UNISWAP_V4_HOOK_LABEL = 'Uniswap V4 Hook';
+/** USDAIO received per 1 ETH after mock pool fee (fixed — replace with quoter later). */
+const EFFECTIVE_USDAIO_PER_ETH =
+  MOCK_ETH_TO_USDAIO_RATE * (1 - UNISWAP_V4_HOOK_FEE_PCT / 100);
+
+function usdaioReceivedForEth(eth: number) {
+  return eth * EFFECTIVE_USDAIO_PER_ETH;
+}
+
+function ethPaidForUsdaioTarget(usdaio: number) {
+  return usdaio / EFFECTIVE_USDAIO_PER_ETH;
+}
+// USDAIO contract is not yet deployed on Sepolia — show a mocked balance until ERC20 read is wired up.
+const MOCK_USDAIO_BALANCE = 1250.0;
 const SCANNER_IDLE_SRC = '/assets/submission-scanner/file-upload-scanner.png';
 const SCANNER_SUBMITTING_SRC = '/assets/submission-scanner/file-upload-scanner-submit.gif';
 
@@ -32,6 +73,7 @@ function buildMockTxHash() {
 }
 
 export default function ReviewBountyGateOverlay({
+  roomId,
   reviewBounty,
   onConfirmed,
   onSubmitPaper,
@@ -45,19 +87,45 @@ export default function ReviewBountyGateOverlay({
   const walletBalance = wallet.balance;
   const walletBalanceSymbol = wallet.balanceSymbol;
 
-  const [amountInput, setAmountInput] = useState('50');
+  const [paymentAsset, setPaymentAsset] = useState<PaymentAsset>('USDAIO');
   const [paymentStep, setPaymentStep] = useState<PaymentStep>('idle');
   const [txHash, setTxHash] = useState('');
   const [paperTitle, setPaperTitle] = useState('');
   const [paperLink, setPaperLink] = useState('');
   const [isPaperSubmitting, setIsPaperSubmitting] = useState(false);
   const [scannerImageError, setScannerImageError] = useState(false);
+  const [bountyUsdaio, setBountyUsdaio] = useState(() => ROOM_BOUNTY_USDAIO[roomId]);
+  /** Rate row: toggle quote direction (1 ETH → USDAIO vs 1 USDAIO → ETH). */
+  const [invertRateQuote, setInvertRateQuote] = useState(false);
   const timersRef = useRef<number[]>([]);
 
-  const amount = Number(amountInput);
-  const isAmountValid = Number.isFinite(amount) && amount >= MIN_REVIEW_BOUNTY && amount <= walletBalance;
+  useEffect(() => {
+    setBountyUsdaio(ROOM_BOUNTY_USDAIO[roomId]);
+  }, [roomId]);
+
+  const isEthMode = paymentAsset === 'ETH';
+  const inputSymbol: PaymentAsset = paymentAsset;
+  const ethPayAmount = ethPaidForUsdaioTarget(bountyUsdaio);
+  const amount = isEthMode ? ethPayAmount : bountyUsdaio;
+  const settledUsdaio = bountyUsdaio;
+  const balanceForAsset = isEthMode ? walletBalance : MOCK_USDAIO_BALANCE;
+  const balanceSymbolForAsset = isEthMode ? walletBalanceSymbol : 'USDAIO';
+  const isAmountValid =
+    Number.isFinite(amount) &&
+    amount > 0 &&
+    bountyUsdaio > 0 &&
+    amount <= balanceForAsset;
   const canConfirm = isAmountValid && paymentStep === 'idle' && isWalletConnected;
   const isReviewBountyConfirmed = Boolean(reviewBounty) || paymentStep === 'confirmed';
+
+  const ethPerOneUsdaio = 1 / EFFECTIVE_USDAIO_PER_ETH;
+
+  const rateDisplayLine = useMemo(() => {
+    if (invertRateQuote) {
+      return `1 USDAIO ≈ ${ethPerOneUsdaio.toLocaleString(undefined, { maximumSignificantDigits: 8 })} ETH`;
+    }
+    return `1 ETH ≈ ${EFFECTIVE_USDAIO_PER_ETH.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDAIO`;
+  }, [ethPerOneUsdaio, invertRateQuote]);
 
   useEffect(() => {
     return () => {
@@ -65,14 +133,33 @@ export default function ReviewBountyGateOverlay({
     };
   }, []);
 
+  const handleAssetChange = (asset: PaymentAsset) => {
+    if (paymentStep !== 'idle' || asset === paymentAsset) return;
+    setPaymentAsset(asset);
+  };
+
   const helperText = useMemo(() => {
     if (!isWalletConnected) return 'Connect your wallet to fund the review bounty.';
-    if (!amountInput) return `Enter at least ${MIN_REVIEW_BOUNTY} USDT.`;
-    if (!Number.isFinite(amount) || amount <= 0) return 'Enter a valid USDT amount.';
-    if (amount < MIN_REVIEW_BOUNTY) return `Minimum review bounty is ${MIN_REVIEW_BOUNTY} USDT.`;
-    if (amount > walletBalance) return `Review bounty cannot exceed your wallet balance (${walletBalance.toFixed(2)} ${walletBalanceSymbol}).`;
-    return 'Amount verified against your wallet balance.';
-  }, [amount, amountInput, isWalletConnected, walletBalance, walletBalanceSymbol]);
+    if (!Number.isFinite(bountyUsdaio) || bountyUsdaio <= 0) return 'Enter a valid review bounty amount.';
+    if (!Number.isFinite(amount) || amount <= 0) return `Enter a valid ${inputSymbol} amount.`;
+    if (amount > balanceForAsset) {
+      return `Bounty cannot exceed your ${balanceSymbolForAsset} balance (${balanceForAsset.toFixed(isEthMode ? 4 : 2)} ${balanceSymbolForAsset}).`;
+    }
+    if (isEthMode) {
+      return `Auto-swap ~${ethPayAmount.toFixed(4)} ETH → ${bountyUsdaio.toFixed(2)} USDAIO via ${UNISWAP_V4_HOOK_LABEL}.`;
+    }
+    return `Room default ${ROOM_BOUNTY_USDAIO[roomId].toFixed(0)} USDAIO — edit amount above.`;
+  }, [
+    amount,
+    balanceForAsset,
+    balanceSymbolForAsset,
+    bountyUsdaio,
+    ethPayAmount,
+    inputSymbol,
+    isEthMode,
+    isWalletConnected,
+    roomId,
+  ]);
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -88,10 +175,19 @@ export default function ReviewBountyGateOverlay({
     timersRef.current.push(window.setTimeout(() => {
       setPaymentStep('confirmed');
       onConfirmed({
-        amount,
-        asset: 'USDT',
+        amount: settledUsdaio,
+        asset: 'USDAIO',
         network: NETWORK_NAME,
         txHash: nextTxHash,
+        paidWith: isEthMode
+          ? {
+              asset: 'ETH',
+              amount,
+              rate: MOCK_ETH_TO_USDAIO_RATE,
+              poolFeePct: UNISWAP_V4_HOOK_FEE_PCT,
+              hook: UNISWAP_V4_HOOK_LABEL,
+            }
+          : undefined,
       });
     }, 1900));
   };
@@ -167,8 +263,14 @@ export default function ReviewBountyGateOverlay({
               >
                 <div className="flex items-center justify-between gap-3 font-bold">
                   <span>Review Bounty Paid</span>
-                  <span>{(reviewBounty?.amount ?? amount).toFixed(2)} USDT</span>
+                  <span>{(reviewBounty?.amount ?? settledUsdaio).toFixed(2)} USDAIO</span>
                 </div>
+                {reviewBounty?.paidWith && (
+                  <div className="mt-1 flex items-center gap-1 text-[11px] font-bold text-[#2f5d7e]">
+                    <Zap size={12} />
+                    Auto-swapped from {reviewBounty.paidWith.amount.toFixed(4)} ETH via {reviewBounty.paidWith.hook}
+                  </div>
+                )}
               </PixelFrame>
 
                 <label className="block text-sm font-bold" htmlFor="paper-title">
@@ -331,10 +433,31 @@ export default function ReviewBountyGateOverlay({
                 <div className="truncate text-xs text-[#6b563f] group-hover:text-[#3f2818]">
                   {walletAddress}
                 </div>
-                <div className="mt-2 text-lg font-bold">
-                  {wallet.isBalanceLoading
-                    ? 'Loading…'
-                    : `${walletBalance.toFixed(4)} ${walletBalanceSymbol}`}
+                <div className="mt-2 grid gap-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        isEthMode ? 'text-[#2f5d7e]' : 'text-[#9b8161]'
+                      }`}
+                    >
+                      ETH
+                    </span>
+                    <span className={`text-sm font-bold ${isEthMode ? 'text-[#17384b]' : 'text-[#503521]'}`}>
+                      {wallet.isBalanceLoading ? 'Loading…' : walletBalance.toFixed(4)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider ${
+                        isEthMode ? 'text-[#9b8161]' : 'text-[#2f6f35]'
+                      }`}
+                    >
+                      USDAIO
+                    </span>
+                    <span className={`text-sm font-bold ${isEthMode ? 'text-[#503521]' : 'text-[#23351f]'}`}>
+                      {MOCK_USDAIO_BALANCE.toFixed(2)}
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-1 text-[10px] uppercase tracking-wider text-[#2f5d7e] opacity-0 transition-opacity group-hover:opacity-100">
                   Click to manage →
@@ -390,38 +513,226 @@ export default function ReviewBountyGateOverlay({
           </PixelFrame>
         </div>
 
-        <label className="mb-2 block text-sm font-bold" htmlFor="review-bounty-amount">
-          Review Bounty Amount
-        </label>
+        <div className="mb-3">
+          <div className="mb-2 flex items-end justify-between gap-2">
+            <label className="text-sm font-bold">Pay With</label>
+            <span className="text-[10px] uppercase tracking-wider text-[#6b563f]">
+              Bounty settles in USDAIO
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {(['USDAIO', 'ETH'] as const).map((asset) => {
+              const isSelected = paymentAsset === asset;
+              const tone =
+                asset === 'USDAIO'
+                  ? {
+                      activeFill: '#8fbf7a',
+                      activeBorder: '#5f4328',
+                      activeText: '#23351f',
+                    }
+                  : {
+                      activeFill: '#9ed4e8',
+                      activeBorder: '#2f5d7e',
+                      activeText: '#17384b',
+                    };
+              const fill = isSelected ? tone.activeFill : '#fff8e6';
+              const border = isSelected ? tone.activeBorder : '#d7b98f';
+              const text = isSelected ? tone.activeText : '#7b5835';
+              const subtext = isSelected ? `${tone.activeText}cc` : '#9b8161';
+              return (
+                <button
+                  key={asset}
+                  type="button"
+                  onClick={() => handleAssetChange(asset)}
+                  disabled={paymentStep !== 'idle'}
+                  aria-pressed={isSelected}
+                  className="pixel-frame relative flex items-center gap-2 px-3 py-2 text-left font-bold transition-transform hover:-translate-y-0.5 active:translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0"
+                  style={{ color: text }}
+                >
+                  <PixelFrameChrome
+                    round={2}
+                    thickness={4}
+                    color={border}
+                    fillColor={fill}
+                    innerHighlightColor={isSelected ? 'rgba(255, 255, 255, 0.36)' : 'rgba(255, 255, 255, 0.5)'}
+                    outerShadowColor={isSelected ? 'rgba(80, 53, 33, 0.22)' : 'rgba(80, 53, 33, 0.12)'}
+                    outerShadowOffsetX={isSelected ? 3 : 1}
+                    outerShadowOffsetY={isSelected ? 3 : 1}
+                  />
+                  <span className="relative z-40 flex items-center gap-2">
+                    {asset === 'USDAIO' ? <Coins size={18} /> : <ArrowRightLeft size={18} />}
+                    <span className="flex flex-col leading-tight">
+                      <span className="text-sm">{asset}</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: subtext }}>
+                        {asset === 'USDAIO' ? 'Direct settle' : `Auto-swap · ${UNISWAP_V4_HOOK_LABEL}`}
+                      </span>
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {!isEthMode ? (
+          <>
+            <label className="mb-2 block text-sm font-bold" htmlFor="review-bounty-amount">
+              Review Bounty Amount
+            </label>
+            <PixelFrame
+              className="mb-2 grid grid-cols-[minmax(0,1fr)_6rem]"
+              color="#7b5835"
+              fillColor="#ffffff"
+              round={2}
+              thickness={4}
+              outerShadowOffsetX={0}
+              outerShadowOffsetY={0}
+              outerShadowColor="transparent"
+            >
+              <input
+                id="review-bounty-amount"
+                type="number"
+                min={0}
+                max={isWalletConnected ? balanceForAsset : undefined}
+                step="0.01"
+                inputMode="decimal"
+                value={Number.isFinite(bountyUsdaio) ? bountyUsdaio : ''}
+                onChange={(event) => {
+                  const next = parseFloat(event.target.value);
+                  if (Number.isFinite(next) && next >= 0) setBountyUsdaio(next);
+                }}
+                disabled={paymentStep !== 'idle' || !isWalletConnected}
+                className="number-input-clean min-w-0 bg-transparent px-4 py-3 text-2xl font-bold text-[#503521] outline-none disabled:opacity-70"
+              />
+              <span
+                className="review-bounty-unit flex items-center justify-center border-l-4 text-lg font-bold"
+                style={{
+                  borderColor: '#7b5835',
+                  backgroundColor: '#e5b45f',
+                  color: '#503521',
+                }}
+              >
+                USDAIO
+              </span>
+            </PixelFrame>
+          </>
+        ) : (
+          <p className="mb-2 text-xs font-bold text-[#6b563f]">
+            Bounty settles in USDAIO — edit pay/receive amounts below (fixed mock rate; on-chain quoter later).
+          </p>
+        )}
+        <div className={`mb-3 text-xs font-bold ${isAmountValid ? 'text-[#2f6f35]' : 'text-[#9c342d]'}`}>
+          {helperText}
+        </div>
+
+        {isEthMode && (
           <PixelFrame
-            className="mb-2 grid grid-cols-[minmax(0,1fr)_6rem]"
-            color="#7b5835"
-            fillColor="#ffffff"
+            className="mb-3 p-3"
+            color="#83add0"
+            fillColor="#edf5fa"
             round={2}
             thickness={4}
             outerShadowOffsetX={0}
             outerShadowOffsetY={0}
             outerShadowColor="transparent"
           >
-            <input
-              id="review-bounty-amount"
-              type="number"
-              min={MIN_REVIEW_BOUNTY}
-              max={isWalletConnected ? walletBalance : undefined}
-              step="1"
-              inputMode="decimal"
-              value={amountInput}
-              disabled={paymentStep !== 'idle' || !isWalletConnected}
-              onChange={(event) => setAmountInput(event.target.value)}
-              className="number-input-clean min-w-0 bg-transparent px-4 py-3 text-2xl font-bold text-[#503521] outline-none disabled:opacity-70"
-            />
-            <span className="review-bounty-unit flex items-center justify-center border-l-4 border-[#7b5835] bg-[#e5b45f] text-lg font-bold text-[#503521]">
-              USDT
-            </span>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#2f5d7e]">
+                <img
+                  src="/assets/ui/brands/uniswap/uniswap.png"
+                  alt="Uniswap"
+                  className="h-4 w-4 pixelated"
+                  referrerPolicy="no-referrer"
+                />
+                {UNISWAP_V4_HOOK_LABEL} Auto-Swap
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#365d7c]">
+                ETH ⇄ USDAIO
+              </span>
+            </div>
+            <div className="flex flex-row items-end gap-2">
+              <div className="min-w-0 flex-1 text-left">
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-[#365d7c]">You pay</div>
+                <PixelFrame
+                  className="flex min-h-[3rem] items-stretch"
+                  color="#6a9eba"
+                  fillColor="#ffffff"
+                  round={2}
+                  thickness={3}
+                  outerShadowOffsetX={0}
+                  outerShadowOffsetY={0}
+                  outerShadowColor="transparent"
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.000001"
+                    inputMode="decimal"
+                    disabled={paymentStep !== 'idle' || !isWalletConnected}
+                    value={Number.isFinite(ethPayAmount) ? ethPayAmount : ''}
+                    onChange={(event) => {
+                      const eth = parseFloat(event.target.value);
+                      if (Number.isFinite(eth) && eth >= 0) {
+                        setBountyUsdaio(usdaioReceivedForEth(eth));
+                      }
+                    }}
+                    className="number-input-clean min-w-0 flex-1 bg-transparent px-2 py-2 text-lg font-bold text-[#17384b] outline-none disabled:opacity-70"
+                    aria-label="ETH amount you pay"
+                  />
+                  <span className="flex items-center border-l-[3px] border-[#83add0] bg-[#c8e4f5] px-2 text-xs font-bold text-[#17384b]">
+                    ETH
+                  </span>
+                </PixelFrame>
+              </div>
+              <div className="mb-1 flex h-10 w-10 flex-shrink-0 items-center justify-center self-end text-[#83add0]">
+                <ArrowRightLeft size={18} aria-hidden="true" />
+              </div>
+              <div className="min-w-0 flex-1 text-right">
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-[#365d7c]">You receive</div>
+                <PixelFrame
+                  className="flex min-h-[3rem] items-stretch"
+                  color="#6a9eba"
+                  fillColor="#ffffff"
+                  round={2}
+                  thickness={3}
+                  outerShadowOffsetX={0}
+                  outerShadowOffsetY={0}
+                  outerShadowColor="transparent"
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    inputMode="decimal"
+                    disabled={paymentStep !== 'idle' || !isWalletConnected}
+                    value={Number.isFinite(bountyUsdaio) ? bountyUsdaio : ''}
+                    onChange={(event) => {
+                      const u = parseFloat(event.target.value);
+                      if (Number.isFinite(u) && u >= 0) setBountyUsdaio(u);
+                    }}
+                    className="number-input-clean min-w-0 flex-1 bg-transparent px-2 py-2 text-lg font-bold text-[#2f5d7e] outline-none disabled:opacity-70"
+                    aria-label="USDAIO amount you receive"
+                  />
+                  <span className="flex items-center border-l-[3px] border-[#83add0] bg-[#b8dcb8] px-2 text-xs font-bold text-[#23351f]">
+                    USDAIO
+                  </span>
+                </PixelFrame>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setInvertRateQuote((v) => !v)}
+              aria-pressed={invertRateQuote}
+              title="Toggle rate direction"
+              className="mt-2 grid w-full cursor-pointer grid-cols-2 gap-2 rounded-sm border border-transparent px-1 py-1 text-left text-[11px] text-[#365d7c] transition-colors hover:bg-[#dcecf7]/80"
+            >
+              <span>Pool fee · {UNISWAP_V4_HOOK_FEE_PCT}%</span>
+              <span className="text-right">
+                Rate · {rateDisplayLine}
+              </span>
+            </button>
           </PixelFrame>
-        <div className={`mb-4 text-xs font-bold ${isAmountValid ? 'text-[#2f6f35]' : 'text-[#9c342d]'}`}>
-          {helperText}
-        </div>
+        )}
 
         <PixelFrame
           className="mb-5 p-3 text-xs text-[#6b563f]"
@@ -435,11 +746,23 @@ export default function ReviewBountyGateOverlay({
         >
           <div className="flex justify-between gap-3">
             <span>Node reward pool</span>
-            <strong className="text-[#503521]">{isAmountValid ? amount.toFixed(2) : '0.00'} USDT</strong>
+            <strong className="text-[#503521]">
+              {isAmountValid ? settledUsdaio.toFixed(2) : '0.00'} USDAIO
+            </strong>
           </div>
+          {isEthMode && (
+            <div className="mt-1 flex justify-between gap-3">
+              <span>You pay (pre-swap)</span>
+              <strong className="text-[#503521]">
+                {isAmountValid ? amount.toFixed(4) : '0.0000'} ETH
+              </strong>
+            </div>
+          )}
           <div className="mt-1 flex justify-between gap-3">
             <span>Estimated gas fee</span>
-            <strong className="text-[#503521]">{NETWORK_FEE_NATIVE.toFixed(4)} {NETWORK_FEE_SYMBOL}</strong>
+            <strong className="text-[#503521]">
+              {NETWORK_FEE_NATIVE.toFixed(4)} {NETWORK_FEE_SYMBOL}
+            </strong>
           </div>
           {txHash && <div className="mt-2 truncate text-[#2f5d7e]">Tx: {txHash}</div>}
         </PixelFrame>
@@ -462,17 +785,22 @@ export default function ReviewBountyGateOverlay({
               outerShadowOffsetY={4}
             />
             <span className="relative z-40 flex items-center justify-center gap-2">
-            {paymentStep === 'idle' && 'Pay Review Bounty'}
+            {paymentStep === 'idle' && (
+              <>
+                {isEthMode ? <Zap size={18} /> : null}
+                {isEthMode ? 'Swap & Pay Review Bounty' : 'Pay Review Bounty'}
+              </>
+            )}
             {paymentStep === 'signing' && (
               <>
                 <Loader2 size={18} className="animate-spin" />
-                Wallet payment pending
+                {isEthMode ? `Routing through ${UNISWAP_V4_HOOK_LABEL}…` : 'Wallet payment pending'}
               </>
             )}
             {paymentStep === 'confirming' && (
               <>
                 <Loader2 size={18} className="animate-spin" />
-                Waiting for payment confirmation
+                {isEthMode ? 'Waiting for swap confirmation' : 'Waiting for payment confirmation'}
               </>
             )}
             </span>

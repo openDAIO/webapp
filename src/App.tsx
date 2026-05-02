@@ -1479,6 +1479,7 @@ export default function App() {
 
           {!isFinalResultVisible && phase === 'IDLE' && (
             <ReviewBountyGateOverlay
+              roomId={selectedRoom}
               reviewBounty={roomReviewBounty}
               onBack={returnToRoomSelection}
               onConfirmed={(reviewBounty) => {

@@ -74,7 +74,7 @@ export function calculateFinalSummary(
     redistributionPerNode: 0,
     reviewBountyAmount,
     bountyPerEligibleNode: eligibleNodeCount > 0 ? reviewBountyAmount / eligibleNodeCount : 0,
-    bountyAsset: 'USDT',
+    bountyAsset: 'USDAIO',
     completedAt,
   };
 }
