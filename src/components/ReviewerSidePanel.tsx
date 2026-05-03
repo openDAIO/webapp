@@ -300,7 +300,7 @@ function RoundTwoDetails({
       )}
 
       <p className="mt-2 text-[11px] leading-snug text-[#5f4328]">
-        Audit quorum 4/4 closes the round. Accepted audits calculate quality and reliability; ignored audits are not used.
+        Audit quorum {state.auditQuorum}/{state.auditQuorum} closes the round. Accepted audits calculate quality and reliability; ignored audits are not used.
       </p>
     </Section>
   );

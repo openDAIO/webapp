@@ -10,6 +10,8 @@ interface AuditQuorumTrackerProps {
   quorum: number;
   isActive: boolean;
   startDelayMs?: number;
+  /** On-chain audit participant count from DAIOCommitRevealManager (overrides local simulation count when provided). */
+  onChainAuditCount?: number;
 }
 
 function reviewerName(id: string, reviewers: ReviewerNode[]) {
@@ -25,7 +27,7 @@ function reviewerFace(id: string) {
   return `/assets/characters/reviewers/faces/${id}.png`;
 }
 
-export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive, startDelayMs = 0 }: AuditQuorumTrackerProps) {
+export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive, startDelayMs = 0, onChainAuditCount }: AuditQuorumTrackerProps) {
   const acceptedAudits = useMemo(
     () => audits
       .filter((audit) => audit.status === 'accepted')
@@ -54,7 +56,15 @@ export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive
     return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [acceptedAudits, isActive, startDelayMs]);
 
-  const isComplete = visibleAcceptedCount >= quorum;
+  // Prefer on-chain count when available (source of truth); fall back to local simulation
+  const displayCount = onChainAuditCount !== undefined
+    ? Math.min(onChainAuditCount, quorum)
+    : Math.min(visibleAcceptedCount, quorum);
+  const isComplete = displayCount >= quorum;
+  const visibleAcceptedAudits = onChainAuditCount !== undefined
+    ? acceptedAudits.slice(0, displayCount)
+    : acceptedAudits.slice(0, Math.min(visibleAcceptedCount, quorum));
+  const visibleIgnoredAudits = onChainAuditCount === undefined ? ignoredAudits : [];
 
   return (
     <section className="scoreboard-panel p-3 text-left">
@@ -62,7 +72,10 @@ export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive
         <div>
           <div className="text-[9px] font-bold uppercase tracking-wider text-[#9ff8ff]">Audit Quorum</div>
           <div className="mt-1 font-mono text-2xl font-bold leading-none text-[#ffd98a]">
-            {Math.min(visibleAcceptedCount, quorum)}/{quorum}
+            {displayCount}/{quorum}
+            {onChainAuditCount !== undefined && (
+              <span className="ml-1.5 text-[9px] font-normal text-[#9ff8ff] opacity-70">on-chain</span>
+            )}
           </div>
         </div>
         <div className={`border-2 px-2 py-1 text-[9px] font-bold uppercase tracking-wider ${
@@ -70,14 +83,14 @@ export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive
             ? 'border-[#9effc2] bg-[#183224] text-[#9effc2]'
             : 'border-[#f1c46d] bg-[#332b1f] text-[#ffd98a]'
         }`}>
-          {isComplete ? 'Quorum Complete' : 'First four accepted'}
+          {isComplete ? 'Quorum Complete' : `First ${quorum} accepted`}
         </div>
       </div>
 
       <div className="mt-3 space-y-1.5">
         {Array.from({ length: quorum }, (_, index) => {
-          const audit = acceptedAudits[index];
-          const isVisible = index < visibleAcceptedCount;
+          const audit = visibleAcceptedAudits[index];
+          const isVisible = Boolean(audit);
 
           if (!isVisible || !audit) {
             return (
@@ -115,14 +128,14 @@ export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive
         })}
       </div>
 
-      {ignoredAudits.length > 0 && (
+      {visibleIgnoredAudits.length > 0 && (
         <div className="mt-2 border border-dashed border-[#566b7a] bg-[#17212c] px-2 py-1.5 text-[9px] leading-tight text-[#9eb6c3]">
           <div className="flex items-center gap-1 font-bold uppercase tracking-wider text-[#ffb3aa]">
             <XCircle size={11} />
             Later audits ignored
           </div>
           <div className="mt-1 flex flex-wrap gap-1">
-            {ignoredAudits.map((audit) => (
+            {visibleIgnoredAudits.map((audit) => (
               <span key={audit.id} className="border border-[#566b7a] px-1 py-0.5">
                 #{audit.arrivalOrder} {reviewerName(audit.fromReviewerId, reviewers)} -&gt; {reviewerName(audit.toReviewerId, reviewers)}
               </span>

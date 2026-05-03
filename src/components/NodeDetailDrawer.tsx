@@ -8,6 +8,7 @@ import RoundHistoryList from './RoundHistoryList';
 import TokenFlowBadge from './TokenFlowBadge';
 import { ASSET_PATHS } from '../assets/assetPaths';
 import { PixelFrameChrome } from './PixelFrame';
+import { getAgentReasons, type AgentReasons } from '../services/daio/contentApi';
 
 interface NodeDetailDrawerProps {
   node: NodeEvaluationResult | null;
@@ -17,6 +18,8 @@ interface NodeDetailDrawerProps {
   chatError?: string | null;
   onClose: () => void;
   onSendChatMessage: (message: string) => void;
+  /** On-chain requestId — used to fetch agent reasons from the Content API. */
+  requestId?: bigint;
 }
 
 const statusLabels = {
@@ -41,12 +44,26 @@ export default function NodeDetailDrawer({
   chatError,
   onClose,
   onSendChatMessage,
+  requestId,
 }: NodeDetailDrawerProps) {
   const [activeTab, setActiveTab] = useState<NodeDetailTab>('summary');
+  const [agentReasons, setAgentReasons] = useState<AgentReasons | null>(null);
 
   useEffect(() => {
     setActiveTab('summary');
+    setAgentReasons(null);
   }, [node?.id]);
+
+  // Fetch agent reasons from Content API when requestId and node are available
+  useEffect(() => {
+    const agentAddress = node?.reviewNode?.agentAddress;
+    if (!requestId || requestId === 0n || !agentAddress) return;
+    let cancelled = false;
+    void getAgentReasons(requestId.toString(), agentAddress).then((reasons) => {
+      if (!cancelled) setAgentReasons(reasons);
+    });
+    return () => { cancelled = true; };
+  }, [requestId, node?.reviewNode?.agentAddress]);
 
   if (!open || !node) return null;
 
@@ -140,11 +157,24 @@ export default function NodeDetailDrawer({
             <div className="node-report-content">
               {activeTab === 'summary' && (
                 <>
+                  {agentReasons?.review?.summary && (
+                    <div className="mb-3">
+                      <p className="node-report-kicker mb-0.5">Review Summary (on-chain)</p>
+                      <p className="node-report-narrative node-report-narrative--plain">
+                        {agentReasons.review.summary}
+                      </p>
+                      {agentReasons.review.rationale && (
+                        <p className="node-report-narrative node-report-narrative--plain mt-1 opacity-80">
+                          {agentReasons.review.rationale}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <p className="node-report-narrative node-report-narrative--plain">
                     {node.finalReasoning || finalHistory?.reasoning || 'No final reasoning is available for this node yet.'}
                   </p>
 
-                  <NodeSummaryCard node={node} tokenFlow={tokenFlow} />
+                  <NodeSummaryCard node={node} tokenFlow={tokenFlow} agentReasons={agentReasons} />
                 </>
               )}
 
@@ -268,7 +298,7 @@ function RoundHistoryScrollPanel({ children }: { children: ReactNode }) {
   );
 }
 
-function NodeSummaryCard({ node, tokenFlow }: { node: NodeEvaluationResult; tokenFlow: number }) {
+function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluationResult; tokenFlow: number; agentReasons?: AgentReasons | null }) {
   const reputationDelta = node.reputationAfter - node.reputationBefore;
   const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
   const reviewNode = node.reviewNode;
@@ -332,6 +362,24 @@ function NodeSummaryCard({ node, tokenFlow }: { node: NodeEvaluationResult; toke
           <p className="node-report-narrative node-report-narrative--plain mt-3">
             The reviewer moved from an independent proposal score, to peer-audit weighting, then to reputation-adjusted final contribution.
           </p>
+        </section>
+      )}
+
+      {agentReasons?.audit && (
+        <section className="node-report-section">
+          <div className="node-report-section-heading">
+            <h3>Audit Reasoning (on-chain)</h3>
+          </div>
+          {agentReasons.audit.summary && (
+            <p className="node-report-narrative node-report-narrative--plain">
+              {agentReasons.audit.summary}
+            </p>
+          )}
+          {agentReasons.audit.rationale && (
+            <p className="node-report-narrative node-report-narrative--plain mt-1 opacity-80">
+              {agentReasons.audit.rationale}
+            </p>
+          )}
         </section>
       )}
     </>

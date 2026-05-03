@@ -77,6 +77,88 @@ export const DAIO_CORE_ABI = [
   },
 ] as const;
 
+// ─── DAIOInfoReader ───────────────────────────────────────────────────────────
+export const DAIO_INFO_READER_ABI = [
+  {
+    name: 'requestInfo',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'requestId', type: 'uint256' }],
+    outputs: [
+      {
+        name: 'info',
+        type: 'tuple',
+        components: [
+          { name: 'requester',          type: 'address' },
+          { name: 'proposalHash',       type: 'bytes32' },
+          { name: 'rubricHash',         type: 'bytes32' },
+          { name: 'domainMask',         type: 'uint256' },
+          { name: 'tier',               type: 'uint8' },
+          { name: 'status',             type: 'uint8' },
+          { name: 'feePaid',            type: 'uint256' },
+          { name: 'priorityFee',        type: 'uint256' },
+          { name: 'rewardPool',         type: 'uint256' },
+          { name: 'protocolFee',        type: 'uint256' },
+          { name: 'createdAt',          type: 'uint256' },
+          { name: 'phaseStartedAt',     type: 'uint256' },
+          { name: 'phaseStartedBlock',  type: 'uint256' },
+          { name: 'activePriority',     type: 'uint256' },
+          { name: 'retryCount',         type: 'uint256' },
+          { name: 'committeeEpoch',     type: 'uint256' },
+          { name: 'auditEpoch',         type: 'uint256' },
+          { name: 'reviewCommitCount',  type: 'uint256' },
+          { name: 'reviewRevealCount',  type: 'uint256' },
+          { name: 'auditCommitCount',   type: 'uint256' },
+          { name: 'auditRevealCount',   type: 'uint256' },
+          { name: 'finalProposalScore', type: 'uint256' },
+          { name: 'confidence',         type: 'uint256' },
+          { name: 'auditCoverage',      type: 'uint256' },
+          { name: 'scoreDispersion',    type: 'uint256' },
+          { name: 'finalReliability',   type: 'uint256' },
+          { name: 'lowConfidence',      type: 'bool' },
+          { name: 'faultCount',         type: 'uint256' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'requestPhase',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'requestId', type: 'uint256' }],
+    outputs: [
+      {
+        name: 'phase',
+        type: 'tuple',
+        components: [
+          { name: 'status',         type: 'uint8' },
+          { name: 'processing',     type: 'bool' },
+          { name: 'completed',      type: 'bool' },
+          { name: 'count',          type: 'uint256' },
+          { name: 'quorum',         type: 'uint256' },
+          { name: 'phaseStartedAt', type: 'uint256' },
+          { name: 'timeout',        type: 'uint256' },
+          { name: 'deadline',       type: 'uint256' },
+          { name: 'timedOut',       type: 'bool' },
+          { name: 'retryCount',     type: 'uint256' },
+          { name: 'maxRetries',     type: 'uint256' },
+          { name: 'lowConfidence',  type: 'bool' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'requestParticipants',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'requestId', type: 'uint256' }],
+    outputs: [
+      { name: 'reviewCommitters', type: 'address[]' },
+      { name: 'revealedReviewers', type: 'address[]' },
+    ],
+  },
+] as const;
+
 // ─── PaymentRouter ────────────────────────────────────────────────────────────
 export const PAYMENT_ROUTER_ABI = [
   {
@@ -142,6 +224,148 @@ export const PAYMENT_ROUTER_ABI = [
       { name: 'requestId',    type: 'uint256', indexed: true  },
       { name: 'paymentToken', type: 'address', indexed: true  },
       { name: 'amountPaid',   type: 'uint256', indexed: false },
+    ],
+  },
+] as const;
+
+// ─── DAIORoundLedger ──────────────────────────────────────────────────────────
+export const ROUND_LEDGER_ABI = [
+  {
+    name: 'getRoundAggregate',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'attempt',   type: 'uint256' },
+      { name: 'round',     type: 'uint8'   },
+    ],
+    outputs: [
+      { name: 'score',         type: 'uint256' },
+      { name: 'totalWeight',   type: 'uint256' },
+      { name: 'confidence',    type: 'uint256' },
+      { name: 'coverage',      type: 'uint256' },
+      { name: 'lowConfidence', type: 'bool'    },
+      { name: 'closed',        type: 'bool'    },
+      { name: 'aborted',       type: 'bool'    },
+    ],
+  },
+  {
+    name: 'getReviewerRoundScore',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'attempt',   type: 'uint256' },
+      { name: 'round',     type: 'uint8'   },
+      { name: 'reviewer',  type: 'address' },
+    ],
+    outputs: [
+      { name: 'score',           type: 'uint256' },
+      { name: 'weight',          type: 'uint256' },
+      { name: 'weightedScore',   type: 'uint256' },
+      { name: 'auditScore',      type: 'uint256' },
+      { name: 'reputationScore', type: 'uint256' },
+      { name: 'available',       type: 'bool'    },
+    ],
+  },
+  {
+    name: 'getReviewerRoundAccounting',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'attempt',   type: 'uint256' },
+      { name: 'round',     type: 'uint8'   },
+      { name: 'reviewer',  type: 'address' },
+    ],
+    outputs: [
+      { name: 'reward',              type: 'uint256' },
+      { name: 'slashed',             type: 'uint256' },
+      { name: 'slashCount',          type: 'uint256' },
+      { name: 'lastSlashReasonHash', type: 'bytes32' },
+      { name: 'protocolFault',       type: 'bool'    },
+      { name: 'semanticFault',       type: 'bool'    },
+    ],
+  },
+] as const;
+
+// ─── DAIOCommitRevealManager ──────────────────────────────────────────────────
+export const COMMIT_REVEAL_ABI = [
+  {
+    name: 'getReviewParticipants',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'attempt',   type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'address[]' }],
+  },
+  {
+    name: 'getAuditParticipants',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'attempt',   type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'address[]' }],
+  },
+] as const;
+
+// ─── ReviewerRegistry ────────────────────────────────────────────────────────
+export const REVIEWER_REGISTRY_ABI = [
+  {
+    name: 'getReviewers',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address[]' }],
+  },
+  {
+    name: 'reviewerCount',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'reviewerAt',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'index', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'getReviewer',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'reviewerAddress', type: 'address' }],
+    outputs: [
+      { name: 'registered',         type: 'bool'    },
+      { name: 'active',             type: 'bool'    },
+      { name: 'suspended',          type: 'bool'    },
+      { name: 'agentId',            type: 'uint256' },
+      { name: 'stake',              type: 'uint256' },
+      { name: 'domainMask',         type: 'uint256' },
+      { name: 'completedRequests',  type: 'uint256' },
+      { name: 'semanticStrikes',    type: 'uint256' },
+      { name: 'protocolFaults',     type: 'uint256' },
+      { name: 'cooldownUntilBlock', type: 'uint256' },
+    ],
+  },
+] as const;
+
+// ─── ReputationLedger ─────────────────────────────────────────────────────────
+export const REPUTATION_LEDGER_ABI = [
+  {
+    name: 'reputations',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'reviewer', type: 'address' }],
+    outputs: [
+      { name: 'score',       type: 'uint256' },
+      { name: 'sampleCount', type: 'uint256' },
     ],
   },
 ] as const;

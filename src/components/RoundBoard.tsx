@@ -10,6 +10,7 @@ interface RoundBoardProps {
 
 const phaseLabel: Partial<Record<SimulationPhase, string>> = {
   IDLE: 'Waiting for Submission',
+  QUEUED: 'Request Queued On-chain',
   SELECTION: 'Selecting Review Nodes',
   MOVING_TO_ROOMS: 'Nodes Walking to Labs',
   ROUND_1: 'Round 1 in Progress',

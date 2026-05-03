@@ -1,17 +1,16 @@
 /**
- * useDaioData — single multicall read hook for the Review Bounty Gate.
+ * useDaioData — multicall read hook for on-chain DAIO state.
  *
- * Fetches in a single RPC round-trip (Multicall3) every 10 s:
- *   - DAIOCore.baseRequestFee
- *   - USDAIO.balanceOf / allowance  (wallet-dependent)
- *   - USDAIO.decimals
- *   - UniswapV4 PoolManager.getSlot0  → live ETH/USDAIO sqrtPriceX96
+ * Batched RPC round-trips (Multicall3) every 5 s:
+ *   Batch 1 (always): baseRequestFee, balances, pool slot0, latestRequestState
+ *   Batch 2 (request-dependent): DAIOInfoReader lifecycle/phase/participants
+ *   Batch 3 (request+attempt-dependent): round aggregates and audit participants
  *
  * Call `refresh()` after a transaction to re-fetch immediately.
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useReadContracts } from 'wagmi';
-import { DAIO_SLOT, buildDaioContracts, CONTRACT_ADDRESSES } from './queries';
+import { DAIO_SLOT, buildDaioContracts, CONTRACT_ADDRESSES, ROUND_LEDGER_ABI, COMMIT_REVEAL_ABI, DAIO_INFO_READER_ABI, REVIEWER_REGISTRY_ABI } from './queries';
 import ADDRESSES_JSON from '../../contracts/addresses.json';
 
 // ─── Pool constants ───────────────────────────────────────────────────────────
@@ -27,6 +26,28 @@ const FALLBACK_USDAIO_PER_ETH =
 // ─── Math helpers ─────────────────────────────────────────────────────────────
 const Q192 = 2n ** 192n;
 const PRICE_PRECISION = 1_000_000n; // 6 decimal places of precision
+const REQUEST_ATTEMPT_FALLBACK = 0n;
+const ROUND_REVIEW = 0;
+const ROUND_AUDIT_CONSENSUS = 1;
+const ROUND_REPUTATION_FINAL = 2;
+const CHAIN_REFETCH_INTERVAL_MS = 5_000;
+
+export const DAIO_REQUEST_STATUS_NAMES = [
+  'None',
+  'Queued',
+  'ReviewCommit',
+  'ReviewReveal',
+  'AuditCommit',
+  'AuditReveal',
+  'Finalized',
+  'Cancelled',
+  'Failed',
+  'Unresolved',
+] as const;
+
+export function daioRequestStatusName(status: number) {
+  return DAIO_REQUEST_STATUS_NAMES[status] ?? `Unknown(${status})`;
+}
 
 /**
  * Converts Uniswap V4 sqrtPriceX96 to a human-readable USDAIO-per-ETH rate.
@@ -93,10 +114,41 @@ export interface DaioData {
    *   5=AuditReveal 6=Finalized 7=Cancelled 8=Failed 9=Unresolved
    */
   latestRequestStatus: number;
+  latestRequestStatusName: string;
   /** true while the request is actively being processed (Queued → AuditReveal). */
   latestRequestProcessing: boolean;
   /** true once the request reached a terminal state (Finalized / Cancelled / Failed / Unresolved). */
   latestRequestCompleted: boolean;
+  requestLifecycle: DaioRequestLifecycle | null;
+  requestPhase: DaioRequestPhase | null;
+
+  // ── Round data (requestId-dependent) ──────────────────────────────────────
+  /** Total score aggregated across all reviewers for this request. */
+  roundTotalScore: bigint;
+  /** Aggregate totalWeight in the latest closed RoundLedger round. */
+  roundReviewerCount: bigint;
+  /** Latest closed RoundLedger round id: 0=review, 1=audit_consensus, 2=reputation_final. */
+  roundNumber: number;
+  /** Current request retry attempt used for round-ledger reads. */
+  requestAttempt: bigint;
+  roundAggregates: {
+    review: DaioRoundAggregate;
+    auditConsensus: DaioRoundAggregate;
+    reputationFinal: DaioRoundAggregate;
+  };
+  /** Addresses of reviewers who committed/revealed in this round. */
+  reviewParticipants: readonly `0x${string}`[];
+  /** Accepted review committers from DAIOInfoReader request storage. */
+  reviewCommitters: readonly `0x${string}`[];
+  /** Reviewers that revealed review reports in DAIOCore request storage. */
+  revealedReviewers: readonly `0x${string}`[];
+  /** Addresses of auditors who participated. */
+  auditParticipants: readonly `0x${string}`[];
+  /** Registered reviewer roster from ReviewerRegistry.getReviewers(). */
+  registeredReviewers: readonly `0x${string}`[];
+  reviewerRoundSnapshots: DaioReviewerRoundSnapshot[];
+  reviewerProfiles: DaioReviewerProfile[];
+  registeredReviewerProfiles: DaioReviewerProfile[];
 
   // ── Convenience addresses ──────────────────────────────────────────────────
   paymentRouterAddress: `0x${string}`;
@@ -108,14 +160,202 @@ export interface DaioData {
   refresh: () => void;
 }
 
+export interface DaioRoundAggregate {
+  score: bigint;
+  totalWeight: bigint;
+  confidence: bigint;
+  coverage: bigint;
+  lowConfidence: boolean;
+  closed: boolean;
+  aborted: boolean;
+}
+
+export interface DaioRequestLifecycle {
+  requester: `0x${string}` | '';
+  status: number;
+  statusName: string;
+  feePaid: bigint;
+  priorityFee: bigint;
+  retryCount: bigint;
+  committeeEpoch: bigint;
+  auditEpoch: bigint;
+  activePriority: bigint;
+  lowConfidence: boolean;
+}
+
+export interface DaioRequestPhase {
+  status: number;
+  processing: boolean;
+  completed: boolean;
+  count: bigint;
+  quorum: bigint;
+  phaseStartedAt: bigint;
+  timeout: bigint;
+  deadline: bigint;
+  timedOut: boolean;
+  retryCount: bigint;
+  maxRetries: bigint;
+  lowConfidence: boolean;
+}
+
+export interface DaioReviewerRoundScore {
+  score: bigint;
+  weight: bigint;
+  weightedScore: bigint;
+  auditScore: bigint;
+  reputationScore: bigint;
+  available: boolean;
+}
+
+export interface DaioReviewerRoundAccounting {
+  reward: bigint;
+  slashed: bigint;
+  slashCount: bigint;
+  lastSlashReasonHash: `0x${string}`;
+  protocolFault: boolean;
+  semanticFault: boolean;
+}
+
+export interface DaioReviewerRoundSnapshot {
+  address: `0x${string}`;
+  review: DaioReviewerRoundScore;
+  auditConsensus: DaioReviewerRoundScore;
+  reputationFinal: DaioReviewerRoundScore;
+  finalAccounting: DaioReviewerRoundAccounting;
+  profile?: DaioReviewerProfile;
+}
+
+export interface DaioReviewerProfile {
+  address: `0x${string}`;
+  ensName?: string;
+  registered: boolean;
+  active: boolean;
+  suspended: boolean;
+  agentId: bigint;
+  stake: bigint;
+  domainMask: bigint;
+  completedRequests: bigint;
+  semanticStrikes: bigint;
+  protocolFaults: bigint;
+  cooldownUntilBlock: bigint;
+}
+
+const EMPTY_ROUND_AGGREGATE: DaioRoundAggregate = {
+  score: 0n,
+  totalWeight: 0n,
+  confidence: 0n,
+  coverage: 0n,
+  lowConfidence: false,
+  closed: false,
+  aborted: false,
+};
+
+const EMPTY_REVIEWER_ROUND_SCORE: DaioReviewerRoundScore = {
+  score: 0n,
+  weight: 0n,
+  weightedScore: 0n,
+  auditScore: 0n,
+  reputationScore: 0n,
+  available: false,
+};
+
+const EMPTY_REVIEWER_ROUND_ACCOUNTING: DaioReviewerRoundAccounting = {
+  reward: 0n,
+  slashed: 0n,
+  slashCount: 0n,
+  lastSlashReasonHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
+  protocolFault: false,
+  semanticFault: false,
+};
+
+function parseRoundAggregate(
+  aggregate: readonly [bigint, bigint, bigint, bigint, boolean, boolean, boolean] | undefined,
+): DaioRoundAggregate {
+  if (!aggregate) return EMPTY_ROUND_AGGREGATE;
+  return {
+    score: aggregate[0],
+    totalWeight: aggregate[1],
+    confidence: aggregate[2],
+    coverage: aggregate[3],
+    lowConfidence: aggregate[4],
+    closed: aggregate[5],
+    aborted: aggregate[6],
+  };
+}
+
+function parseReviewerRoundScore(
+  score: readonly [bigint, bigint, bigint, bigint, bigint, boolean] | undefined,
+): DaioReviewerRoundScore {
+  if (!score) return EMPTY_REVIEWER_ROUND_SCORE;
+  return {
+    score: score[0],
+    weight: score[1],
+    weightedScore: score[2],
+    auditScore: score[3],
+    reputationScore: score[4],
+    available: score[5],
+  };
+}
+
+function parseReviewerRoundAccounting(
+  accounting: readonly [bigint, bigint, bigint, `0x${string}`, boolean, boolean] | undefined,
+): DaioReviewerRoundAccounting {
+  if (!accounting) return EMPTY_REVIEWER_ROUND_ACCOUNTING;
+  return {
+    reward: accounting[0],
+    slashed: accounting[1],
+    slashCount: accounting[2],
+    lastSlashReasonHash: accounting[3],
+    protocolFault: accounting[4],
+    semanticFault: accounting[5],
+  };
+}
+
+function tupleField<T>(tuple: unknown, index: number, name: string, fallback: T): T {
+  const named = tuple && typeof tuple === 'object'
+    ? (tuple as Record<string, unknown>)[name]
+    : undefined;
+  if (named !== undefined) return named as T;
+  if (Array.isArray(tuple) && tuple[index] !== undefined) return tuple[index] as T;
+  return fallback;
+}
+
+function addressArray(value: unknown): readonly `0x${string}`[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is `0x${string}` => typeof entry === 'string' && entry.startsWith('0x'))
+    : [];
+}
+
+function uniqueAddresses(groups: readonly (readonly `0x${string}`[])[]): `0x${string}`[] {
+  const byLowercase = new Map<string, `0x${string}`>();
+  groups.forEach((group) => {
+    group.forEach((address) => byLowercase.set(address.toLowerCase(), address));
+  });
+  return Array.from(byLowercase.values());
+}
+
+function latestClosedRound(input: {
+  review: DaioRoundAggregate;
+  auditConsensus: DaioRoundAggregate;
+  reputationFinal: DaioRoundAggregate;
+}): { round: number; aggregate: DaioRoundAggregate } {
+  if (input.reputationFinal.closed) return { round: ROUND_REPUTATION_FINAL, aggregate: input.reputationFinal };
+  if (input.auditConsensus.closed) return { round: ROUND_AUDIT_CONSENSUS, aggregate: input.auditConsensus };
+  if (input.review.closed) return { round: ROUND_REVIEW, aggregate: input.review };
+  return { round: 0, aggregate: EMPTY_ROUND_AGGREGATE };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useDaioData(): DaioData {
   const { address: walletAddress } = useAccount();
+  const lastLatestRequestLogKeyRef = useRef('');
+  const lastRoundSnapshotLogKeyRef = useRef('');
 
+  // ── Batch 1: always-on + wallet-dependent calls (slots 0-5) ─────────────
   const { data, isLoading, refetch } = useReadContracts({
     contracts: buildDaioContracts(walletAddress),
     query: {
-      refetchInterval:            10_000,
+      refetchInterval:            CHAIN_REFETCH_INTERVAL_MS,
       staleTime:                  0,
       refetchIntervalInBackground: false,
     },
@@ -138,9 +378,303 @@ export function useDaioData(): DaioData {
     | readonly [bigint, number, boolean, boolean]
     | undefined;
   const latestRequestId         = requestState?.[0] ?? 0n;
-  const latestRequestStatus     = requestState?.[1] ?? 0;
-  const latestRequestProcessing = requestState?.[2] ?? false;
-  const latestRequestCompleted  = requestState?.[3] ?? false;
+  const routerRequestStatus     = requestState?.[1] ?? 0;
+  const routerRequestProcessing = requestState?.[2] ?? false;
+  const routerRequestCompleted  = requestState?.[3] ?? false;
+  const registeredReviewers = useMemo(
+    () => addressArray(data?.[DAIO_SLOT.REGISTERED_REVIEWERS]?.result),
+    [data],
+  );
+
+  // ── Batch 2: request lifecycle/phase/participants through DAIOInfoReader ──
+  //   Runs only once we know the latestRequestId from Batch 1.
+  const hasRequest = latestRequestId > 0n;
+  const { data: requestData, refetch: refetchRequest } = useReadContracts({
+    contracts: hasRequest
+      ? ([
+          {
+            address:      CONTRACT_ADDRESSES.daioInfoReader,
+            abi:          DAIO_INFO_READER_ABI,
+            functionName: 'requestInfo' as const,
+            args:         [latestRequestId] as const,
+          },
+          {
+            address:      CONTRACT_ADDRESSES.daioInfoReader,
+            abi:          DAIO_INFO_READER_ABI,
+            functionName: 'requestPhase' as const,
+            args:         [latestRequestId] as const,
+          },
+          {
+            address:      CONTRACT_ADDRESSES.daioInfoReader,
+            abi:          DAIO_INFO_READER_ABI,
+            functionName: 'requestParticipants' as const,
+            args:         [latestRequestId] as const,
+          },
+        ] as const)
+      : [],
+    query: {
+      enabled:                     hasRequest,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  const requestInfo = hasRequest ? requestData?.[0]?.result : undefined;
+  const requestPhaseTuple = hasRequest ? requestData?.[1]?.result : undefined;
+  const requestParticipantsTuple = hasRequest ? requestData?.[2]?.result : undefined;
+  const requestAttempt = requestInfo
+    ? tupleField<bigint>(requestInfo, 14, 'retryCount', REQUEST_ATTEMPT_FALLBACK)
+    : REQUEST_ATTEMPT_FALLBACK;
+  const latestRequestStatus = requestInfo
+    ? tupleField<number>(requestInfo, 5, 'status', routerRequestStatus)
+    : routerRequestStatus;
+  const latestRequestStatusName = daioRequestStatusName(latestRequestStatus);
+  const latestRequestProcessing = requestPhaseTuple
+    ? tupleField<boolean>(requestPhaseTuple, 1, 'processing', routerRequestProcessing)
+    : routerRequestProcessing;
+  const latestRequestCompleted = requestPhaseTuple
+    ? tupleField<boolean>(requestPhaseTuple, 2, 'completed', routerRequestCompleted)
+    : routerRequestCompleted;
+  const requestLifecycle: DaioRequestLifecycle | null = requestInfo
+    ? {
+        requester: tupleField<`0x${string}` | ''>(requestInfo, 0, 'requester', ''),
+        status: latestRequestStatus,
+        statusName: latestRequestStatusName,
+        feePaid: tupleField<bigint>(requestInfo, 6, 'feePaid', 0n),
+        priorityFee: tupleField<bigint>(requestInfo, 7, 'priorityFee', 0n),
+        retryCount: requestAttempt,
+        committeeEpoch: tupleField<bigint>(requestInfo, 15, 'committeeEpoch', 0n),
+        auditEpoch: tupleField<bigint>(requestInfo, 16, 'auditEpoch', 0n),
+        activePriority: tupleField<bigint>(requestInfo, 13, 'activePriority', 0n),
+        lowConfidence: tupleField<boolean>(requestInfo, 26, 'lowConfidence', false),
+      }
+    : null;
+  const requestPhase: DaioRequestPhase | null = requestPhaseTuple
+    ? {
+        status: tupleField<number>(requestPhaseTuple, 0, 'status', latestRequestStatus),
+        processing: latestRequestProcessing,
+        completed: latestRequestCompleted,
+        count: tupleField<bigint>(requestPhaseTuple, 3, 'count', 0n),
+        quorum: tupleField<bigint>(requestPhaseTuple, 4, 'quorum', 0n),
+        phaseStartedAt: tupleField<bigint>(requestPhaseTuple, 5, 'phaseStartedAt', 0n),
+        timeout: tupleField<bigint>(requestPhaseTuple, 6, 'timeout', 0n),
+        deadline: tupleField<bigint>(requestPhaseTuple, 7, 'deadline', 0n),
+        timedOut: tupleField<boolean>(requestPhaseTuple, 8, 'timedOut', false),
+        retryCount: tupleField<bigint>(requestPhaseTuple, 9, 'retryCount', requestAttempt),
+        maxRetries: tupleField<bigint>(requestPhaseTuple, 10, 'maxRetries', 0n),
+        lowConfidence: tupleField<boolean>(requestPhaseTuple, 11, 'lowConfidence', false),
+      }
+    : null;
+  const { reviewCommitters, revealedReviewers, reviewParticipants } = useMemo(() => {
+    const committers = addressArray(tupleField<unknown>(requestParticipantsTuple, 0, 'reviewCommitters', []));
+    const revealed = addressArray(tupleField<unknown>(requestParticipantsTuple, 1, 'revealedReviewers', []));
+    return {
+      reviewCommitters: committers,
+      revealedReviewers: revealed,
+      reviewParticipants: revealed.length > 0 ? revealed : committers,
+    };
+  }, [requestParticipantsTuple]);
+
+  // ── Batch 3: requestId+attempt-dependent round reads ──────────────────────
+  const { data: roundData, refetch: refetchRound } = useReadContracts({
+    contracts: hasRequest
+      ? ([
+          {
+            address:      CONTRACT_ADDRESSES.daioRoundLedger,
+            abi:          ROUND_LEDGER_ABI,
+            functionName: 'getRoundAggregate' as const,
+            args:         [latestRequestId, requestAttempt, ROUND_REVIEW] as const,
+          },
+          {
+            address:      CONTRACT_ADDRESSES.daioRoundLedger,
+            abi:          ROUND_LEDGER_ABI,
+            functionName: 'getRoundAggregate' as const,
+            args:         [latestRequestId, requestAttempt, ROUND_AUDIT_CONSENSUS] as const,
+          },
+          {
+            address:      CONTRACT_ADDRESSES.daioRoundLedger,
+            abi:          ROUND_LEDGER_ABI,
+            functionName: 'getRoundAggregate' as const,
+            args:         [latestRequestId, requestAttempt, ROUND_REPUTATION_FINAL] as const,
+          },
+          {
+            address:      CONTRACT_ADDRESSES.daioCommitReveal,
+            abi:          COMMIT_REVEAL_ABI,
+            functionName: 'getAuditParticipants' as const,
+            args:         [latestRequestId, requestAttempt] as const,
+          },
+        ] as const)
+      : [],
+    query: {
+      enabled:                     hasRequest,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  // getRoundAggregate → [score, totalWeight, confidence, coverage, lowConfidence, closed, aborted]
+  const reviewRoundAggregate = (hasRequest ? roundData?.[0]?.result : undefined) as
+    | readonly [bigint, bigint, bigint, bigint, boolean, boolean, boolean]
+    | undefined;
+  const auditRoundAggregate = (hasRequest ? roundData?.[1]?.result : undefined) as
+    | readonly [bigint, bigint, bigint, bigint, boolean, boolean, boolean]
+    | undefined;
+  const reputationRoundAggregate = (hasRequest ? roundData?.[2]?.result : undefined) as
+    | readonly [bigint, bigint, bigint, bigint, boolean, boolean, boolean]
+    | undefined;
+
+  const roundAggregates = {
+    review: parseRoundAggregate(reviewRoundAggregate),
+    auditConsensus: parseRoundAggregate(auditRoundAggregate),
+    reputationFinal: parseRoundAggregate(reputationRoundAggregate),
+  };
+  const latestRound = latestClosedRound(roundAggregates);
+  const roundTotalScore = latestRound.aggregate.score;
+  const roundReviewerCount = latestRound.aggregate.totalWeight;
+  const roundNumber = latestRound.round;
+
+  const auditParticipants = useMemo(
+    () => addressArray(hasRequest ? roundData?.[3]?.result : undefined),
+    [hasRequest, roundData],
+  );
+
+  const reviewerAddresses = useMemo(
+    () => uniqueAddresses([reviewParticipants, auditParticipants]),
+    [auditParticipants, reviewParticipants],
+  );
+
+  const reviewerScoreContracts = useMemo(() => {
+    if (!hasRequest || reviewerAddresses.length === 0) return [];
+
+    return reviewerAddresses.flatMap((reviewer) => ([
+      {
+        address:      CONTRACT_ADDRESSES.daioRoundLedger,
+        abi:          ROUND_LEDGER_ABI,
+        functionName: 'getReviewerRoundScore' as const,
+        args:         [latestRequestId, requestAttempt, ROUND_REVIEW, reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.daioRoundLedger,
+        abi:          ROUND_LEDGER_ABI,
+        functionName: 'getReviewerRoundScore' as const,
+        args:         [latestRequestId, requestAttempt, ROUND_AUDIT_CONSENSUS, reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.daioRoundLedger,
+        abi:          ROUND_LEDGER_ABI,
+        functionName: 'getReviewerRoundScore' as const,
+        args:         [latestRequestId, requestAttempt, ROUND_REPUTATION_FINAL, reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.daioRoundLedger,
+        abi:          ROUND_LEDGER_ABI,
+        functionName: 'getReviewerRoundAccounting' as const,
+        args:         [latestRequestId, requestAttempt, ROUND_REPUTATION_FINAL, reviewer] as const,
+      },
+    ]));
+  }, [hasRequest, latestRequestId, requestAttempt, reviewerAddresses]);
+
+  const { data: reviewerScoreData, refetch: refetchReviewerScores } = useReadContracts({
+    contracts: reviewerScoreContracts,
+    query: {
+      enabled:                     hasRequest && reviewerScoreContracts.length > 0,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  const profileAddresses = useMemo(
+    () => uniqueAddresses([registeredReviewers, reviewerAddresses]),
+    [registeredReviewers, reviewerAddresses],
+  );
+
+  const reviewerProfileContracts = useMemo(() => {
+    if (profileAddresses.length === 0) return [];
+
+    return profileAddresses.map((reviewer) => ({
+      address:      CONTRACT_ADDRESSES.reviewerRegistry,
+      abi:          REVIEWER_REGISTRY_ABI,
+      functionName: 'getReviewer' as const,
+      args:         [reviewer] as const,
+    }));
+  }, [profileAddresses]);
+
+  const { data: reviewerProfileData, refetch: refetchReviewerProfiles } = useReadContracts({
+    contracts: reviewerProfileContracts,
+    query: {
+      enabled:                     reviewerProfileContracts.length > 0,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  const reviewerProfiles = useMemo(
+    () => profileAddresses.map((address, index): DaioReviewerProfile | null => {
+      const profile = reviewerProfileData?.[index]?.result as
+        | readonly [boolean, boolean, boolean, bigint, bigint, bigint, bigint, bigint, bigint, bigint]
+        | undefined;
+      if (!profile) return null;
+
+      const registeredIndex = registeredReviewers.findIndex(
+        (reviewer) => reviewer.toLowerCase() === address.toLowerCase(),
+      );
+
+      return {
+        address,
+        ensName: registeredIndex >= 0 ? `reviewer-${registeredIndex + 1}.daio.eth` : undefined,
+        registered: profile[0],
+        active: profile[1],
+        suspended: profile[2],
+        agentId: profile[3],
+        stake: profile[4],
+        domainMask: profile[5],
+        completedRequests: profile[6],
+        semanticStrikes: profile[7],
+        protocolFaults: profile[8],
+        cooldownUntilBlock: profile[9],
+      };
+    }).filter((profile): profile is DaioReviewerProfile => Boolean(profile)),
+    [profileAddresses, registeredReviewers, reviewerProfileData],
+  );
+  const registeredReviewerProfiles = useMemo(() => {
+    const profileByAddress = new Map(reviewerProfiles.map((profile) => [profile.address.toLowerCase(), profile]));
+    return registeredReviewers
+      .map((address) => profileByAddress.get(address.toLowerCase()))
+      .filter((profile): profile is DaioReviewerProfile => Boolean(profile));
+  }, [registeredReviewers, reviewerProfiles]);
+
+  const reviewerRoundSnapshots = useMemo(
+    () => reviewerAddresses.map((address, index): DaioReviewerRoundSnapshot => {
+      const baseIndex = index * 4;
+      const profile = reviewerProfiles.find((candidate) => candidate.address.toLowerCase() === address.toLowerCase());
+      const reviewScore = (reviewerScoreData?.[baseIndex]?.result ?? undefined) as
+        | readonly [bigint, bigint, bigint, bigint, bigint, boolean]
+        | undefined;
+      const auditScore = (reviewerScoreData?.[baseIndex + 1]?.result ?? undefined) as
+        | readonly [bigint, bigint, bigint, bigint, bigint, boolean]
+        | undefined;
+      const finalScore = (reviewerScoreData?.[baseIndex + 2]?.result ?? undefined) as
+        | readonly [bigint, bigint, bigint, bigint, bigint, boolean]
+        | undefined;
+      const finalAccounting = (reviewerScoreData?.[baseIndex + 3]?.result ?? undefined) as
+        | readonly [bigint, bigint, bigint, `0x${string}`, boolean, boolean]
+        | undefined;
+
+      return {
+        address,
+        review: parseReviewerRoundScore(reviewScore),
+        auditConsensus: parseReviewerRoundScore(auditScore),
+        reputationFinal: parseReviewerRoundScore(finalScore),
+        finalAccounting: parseReviewerRoundAccounting(finalAccounting),
+        profile,
+      };
+    }),
+    [reviewerAddresses, reviewerProfiles, reviewerScoreData],
+  );
 
   // ── Compute pool rate ─────────────────────────────────────────────────────
   const poolRateUsdaioPerEth = poolSqrtPriceX96
@@ -152,7 +686,237 @@ export function useDaioData(): DaioData {
       ? poolRateUsdaioPerEth * (1 - POOL_FEE_FRACTION)
       : FALLBACK_USDAIO_PER_ETH;
 
-  const refresh = useCallback(() => { refetch(); }, [refetch]);
+  const refresh = useCallback(() => {
+    console.debug('[DAIO][chain] refresh requested', {
+      latestRequestId: latestRequestId.toString(),
+      requestAttempt: requestAttempt.toString(),
+    });
+    refetch();
+    if (hasRequest) refetchRequest();
+    if (hasRequest) refetchRound();
+    if (hasRequest && reviewerScoreContracts.length > 0) refetchReviewerScores();
+    if (reviewerProfileContracts.length > 0) refetchReviewerProfiles();
+  }, [
+    refetch,
+    refetchRequest,
+    refetchRound,
+    refetchReviewerScores,
+    refetchReviewerProfiles,
+    hasRequest,
+    latestRequestId,
+    requestAttempt,
+    reviewerScoreContracts.length,
+    reviewerProfileContracts.length,
+  ]);
+
+  useEffect(() => {
+    const lifecycleKey = requestLifecycle
+      ? [
+          requestLifecycle.requester,
+          requestLifecycle.status,
+          requestLifecycle.feePaid,
+          requestLifecycle.priorityFee,
+          requestLifecycle.retryCount,
+          requestLifecycle.committeeEpoch,
+          requestLifecycle.auditEpoch,
+          requestLifecycle.activePriority,
+          requestLifecycle.lowConfidence,
+        ].map(String).join(':')
+      : 'none';
+    const logKey = [
+      walletAddress ?? 'no-wallet',
+      latestRequestId,
+      latestRequestStatus,
+      latestRequestProcessing,
+      latestRequestCompleted,
+      registeredReviewers.join(','),
+      lifecycleKey,
+    ].map(String).join('|');
+
+    if (lastLatestRequestLogKeyRef.current === logKey) return;
+    lastLatestRequestLogKeyRef.current = logKey;
+
+    console.debug('[DAIO][chain] latestRequestState', {
+      walletAddress,
+      requestId: latestRequestId.toString(),
+      status: latestRequestStatus,
+      statusName: latestRequestStatusName,
+      processing: latestRequestProcessing,
+      completed: latestRequestCompleted,
+      registeredReviewers,
+      lifecycle: requestLifecycle
+        ? {
+            requester: requestLifecycle.requester,
+            statusName: requestLifecycle.statusName,
+            feePaid: requestLifecycle.feePaid.toString(),
+            priorityFee: requestLifecycle.priorityFee.toString(),
+            retryCount: requestLifecycle.retryCount.toString(),
+            committeeEpoch: requestLifecycle.committeeEpoch.toString(),
+            auditEpoch: requestLifecycle.auditEpoch.toString(),
+            activePriority: requestLifecycle.activePriority.toString(),
+            lowConfidence: requestLifecycle.lowConfidence,
+          }
+        : null,
+      phase: requestPhase
+        ? {
+            count: requestPhase.count.toString(),
+            quorum: requestPhase.quorum.toString(),
+            deadline: requestPhase.deadline.toString(),
+            timedOut: requestPhase.timedOut,
+          }
+        : null,
+    });
+  }, [
+    walletAddress,
+    latestRequestId,
+    latestRequestStatus,
+    latestRequestStatusName,
+    latestRequestProcessing,
+    latestRequestCompleted,
+    registeredReviewers,
+    requestLifecycle,
+    requestPhase,
+  ]);
+
+  useEffect(() => {
+    if (!hasRequest) return;
+    const logKey = [
+      latestRequestId,
+      requestAttempt,
+      roundAggregates.review.score,
+      roundAggregates.review.totalWeight,
+      roundAggregates.review.confidence,
+      roundAggregates.review.coverage,
+      roundAggregates.review.closed,
+      roundAggregates.review.aborted,
+      roundAggregates.auditConsensus.score,
+      roundAggregates.auditConsensus.totalWeight,
+      roundAggregates.auditConsensus.confidence,
+      roundAggregates.auditConsensus.coverage,
+      roundAggregates.auditConsensus.closed,
+      roundAggregates.auditConsensus.aborted,
+      roundAggregates.reputationFinal.score,
+      roundAggregates.reputationFinal.totalWeight,
+      roundAggregates.reputationFinal.confidence,
+      roundAggregates.reputationFinal.coverage,
+      roundAggregates.reputationFinal.closed,
+      roundAggregates.reputationFinal.aborted,
+      reviewCommitters.join(','),
+      revealedReviewers.join(','),
+      reviewParticipants.join(','),
+      auditParticipants.join(','),
+      reviewerRoundSnapshots.map((snapshot) => [
+        snapshot.address,
+        snapshot.review.available,
+        snapshot.review.score,
+        snapshot.review.weight,
+        snapshot.auditConsensus.available,
+        snapshot.auditConsensus.score,
+        snapshot.auditConsensus.weight,
+        snapshot.auditConsensus.auditScore,
+        snapshot.reputationFinal.available,
+        snapshot.reputationFinal.score,
+        snapshot.reputationFinal.weight,
+        snapshot.reputationFinal.reputationScore,
+        snapshot.finalAccounting.reward,
+        snapshot.finalAccounting.slashed,
+        snapshot.finalAccounting.slashCount,
+      ].map(String).join(':')).join('|'),
+    ].map(String).join('|');
+
+    if (lastRoundSnapshotLogKeyRef.current === logKey) return;
+    lastRoundSnapshotLogKeyRef.current = logKey;
+
+    console.debug('[DAIO][chain] round snapshot', {
+      requestId: latestRequestId.toString(),
+      attempt: requestAttempt.toString(),
+      aggregates: {
+        review: {
+          score: roundAggregates.review.score.toString(),
+          totalWeight: roundAggregates.review.totalWeight.toString(),
+          confidence: roundAggregates.review.confidence.toString(),
+          coverage: roundAggregates.review.coverage.toString(),
+          closed: roundAggregates.review.closed,
+        },
+        auditConsensus: {
+          score: roundAggregates.auditConsensus.score.toString(),
+          totalWeight: roundAggregates.auditConsensus.totalWeight.toString(),
+          confidence: roundAggregates.auditConsensus.confidence.toString(),
+          coverage: roundAggregates.auditConsensus.coverage.toString(),
+          closed: roundAggregates.auditConsensus.closed,
+        },
+        reputationFinal: {
+          score: roundAggregates.reputationFinal.score.toString(),
+          totalWeight: roundAggregates.reputationFinal.totalWeight.toString(),
+          confidence: roundAggregates.reputationFinal.confidence.toString(),
+          coverage: roundAggregates.reputationFinal.coverage.toString(),
+          closed: roundAggregates.reputationFinal.closed,
+        },
+      },
+      reviewCommitters,
+      revealedReviewers,
+      reviewParticipants,
+      auditParticipants,
+      reviewerRoundSnapshots: reviewerRoundSnapshots.map((snapshot) => ({
+        address: snapshot.address,
+        review: {
+          available: snapshot.review.available,
+          score: snapshot.review.score.toString(),
+          weight: snapshot.review.weight.toString(),
+        },
+        auditConsensus: {
+          available: snapshot.auditConsensus.available,
+          score: snapshot.auditConsensus.score.toString(),
+          weight: snapshot.auditConsensus.weight.toString(),
+          auditScore: snapshot.auditConsensus.auditScore.toString(),
+        },
+        reputationFinal: {
+          available: snapshot.reputationFinal.available,
+          score: snapshot.reputationFinal.score.toString(),
+          weight: snapshot.reputationFinal.weight.toString(),
+          reputationScore: snapshot.reputationFinal.reputationScore.toString(),
+        },
+        finalAccounting: {
+          reward: snapshot.finalAccounting.reward.toString(),
+          slashed: snapshot.finalAccounting.slashed.toString(),
+          slashCount: snapshot.finalAccounting.slashCount.toString(),
+        },
+        profile: snapshot.profile
+          ? {
+              agentId: snapshot.profile.agentId.toString(),
+              ensName: snapshot.profile.ensName,
+              registered: snapshot.profile.registered,
+              active: snapshot.profile.active,
+              suspended: snapshot.profile.suspended,
+            }
+          : undefined,
+      })),
+    });
+  }, [
+    hasRequest,
+    latestRequestId,
+    requestAttempt,
+    roundAggregates.review.score,
+    roundAggregates.review.totalWeight,
+    roundAggregates.review.confidence,
+    roundAggregates.review.coverage,
+    roundAggregates.review.closed,
+    roundAggregates.auditConsensus.score,
+    roundAggregates.auditConsensus.totalWeight,
+    roundAggregates.auditConsensus.confidence,
+    roundAggregates.auditConsensus.coverage,
+    roundAggregates.auditConsensus.closed,
+    roundAggregates.reputationFinal.score,
+    roundAggregates.reputationFinal.totalWeight,
+    roundAggregates.reputationFinal.confidence,
+    roundAggregates.reputationFinal.coverage,
+    roundAggregates.reputationFinal.closed,
+    reviewCommitters,
+    revealedReviewers,
+    reviewParticipants,
+    auditParticipants,
+    reviewerRoundSnapshots,
+  ]);
 
   return {
     baseRequestFee,
@@ -169,13 +933,30 @@ export function useDaioData(): DaioData {
 
     poolSqrtPriceX96,
     poolRateUsdaioPerEth,
-    poolFeePct: POOL_FEE_FRACTION * 100,  // e.g. 0.3
+    poolFeePct: POOL_FEE_FRACTION * 100,
     effectiveUsdaioPerEth,
 
     latestRequestId,
     latestRequestStatus,
+    latestRequestStatusName,
     latestRequestProcessing,
     latestRequestCompleted,
+    requestLifecycle,
+    requestPhase,
+
+    roundTotalScore,
+    roundReviewerCount,
+    roundNumber,
+    requestAttempt,
+    roundAggregates,
+    reviewParticipants,
+    reviewCommitters,
+    revealedReviewers,
+    auditParticipants,
+    registeredReviewers,
+    reviewerRoundSnapshots,
+    reviewerProfiles,
+    registeredReviewerProfiles,
 
     paymentRouterAddress: CONTRACT_ADDRESSES.paymentRouter,
     usdaioAddress:        CONTRACT_ADDRESSES.usdaio,

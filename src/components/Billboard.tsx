@@ -30,6 +30,8 @@ function formatNumber(value: number) {
 
 function activeRoundFromPhase(phase?: SimulationPhase, currentRound = 1) {
   switch (phase) {
+    case 'QUEUED':
+      return 1;
     case 'MOVING_TO_ROOMS':
     case 'ROUND_1':
       return 1;
@@ -46,6 +48,8 @@ function activeRoundFromPhase(phase?: SimulationPhase, currentRound = 1) {
 
 function titleForPhase(phase?: SimulationPhase, currentRound = 1) {
   switch (phase) {
+    case 'QUEUED':
+      return 'Queued';
     case 'SELECTION':
       return 'Selection';
     case 'MOVING_TO_ROOMS':
@@ -393,7 +397,7 @@ function SelectionRulesPanel() {
       className="mx-auto max-w-[420px] text-left text-[10px] font-bold uppercase leading-relaxed tracking-wider text-[#d9f7ff]"
     >
       <p>
-        VRF selection roll {(REVIEW_VRF_PROBABILITY * 100).toFixed(0)}%. Final reviewers are locked to exactly {REVIEWER_COUNT}.
+        Review sortition {(REVIEW_VRF_PROBABILITY * 100).toFixed(0)}%. Final reviewers are capped by quorum {REVIEWER_COUNT}.
       </p>
       <p className="mt-1 text-[#9ff8ff]">
         Audit VRF {(AUDIT_VRF_PROBABILITY * 100).toFixed(0)}%. Only selected reviewers enter rounds 1, 2, and 3.

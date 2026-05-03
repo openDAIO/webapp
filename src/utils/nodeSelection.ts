@@ -4,6 +4,8 @@ interface SelectableNode {
   id: string;
 }
 
+// Current frontend fallback: five spawned agents with a three-reviewer committee.
+// Chain participant reads override this fallback once the request has commits.
 export const DEFAULT_SELECTED_NODE_COUNT = 3;
 
 export function selectRandomReviewNodeIds<T extends SelectableNode>(
@@ -55,7 +57,7 @@ export function getSelectedReviewNodes<T extends SelectableNode & { selected?: b
 export function getReviewParticipants<T extends SelectableNode & { selected?: boolean }>(nodes: T[]) {
   const selectedNodes = getSelectedReviewNodes(nodes);
 
-  if (selectedNodes.length >= DEFAULT_SELECTED_NODE_COUNT) {
+  if (selectedNodes.length > 0) {
     return selectedNodes.slice(0, DEFAULT_SELECTED_NODE_COUNT);
   }
 

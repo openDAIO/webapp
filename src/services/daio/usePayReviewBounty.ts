@@ -20,7 +20,7 @@
 
 import { useState, useCallback } from 'react';
 import { usePublicClient, useWriteContract, useChainId } from 'wagmi';
-import { encodeAbiParameters, keccak256, parseUnits } from 'viem';
+import { decodeEventLog, parseUnits, type TransactionReceipt } from 'viem';
 import { sepolia } from 'wagmi/chains';
 import { USDAIO_ABI, PAYMENT_ROUTER_ABI } from '../../contracts/abis';
 import type { DaioData } from './useDaioData';
@@ -41,11 +41,13 @@ export type PaymentStep =
   | 'error';
 
 export interface PayReviewBountyResult {
-  step:    PaymentStep;
-  txHash:  string;
-  error:   string | null;
-  execute: (params: ExecuteParams) => Promise<void>;
-  reset:   () => void;
+  step:      PaymentStep;
+  txHash:    string;
+  /** On-chain requestId parsed from the RequestPaid event after confirmation. 0n when not yet confirmed. */
+  requestId: bigint;
+  error:     string | null;
+  execute:   (params: ExecuteParams) => Promise<PaymentExecutionResult | null>;
+  reset:     () => void;
 }
 
 export interface ExecuteParams {
@@ -56,22 +58,66 @@ export interface ExecuteParams {
   ethAmount:    number;
   walletAddress: `0x${string}`;
   daioData:     DaioData;
+  document:     PaymentDocument;
 }
 
-// ─── Protocol defaults (replace with real content hashes from the paper) ──────
+export interface PaymentDocument {
+  proposalURI: string;
+  proposalHash: `0x${string}`;
+  rubricHash: `0x${string}`;
+}
+
+export interface PaymentExecutionResult {
+  txHash: `0x${string}`;
+  requestId: bigint;
+  proposalURI: string;
+  proposalHash: `0x${string}`;
+  rubricHash: `0x${string}`;
+  asset: ExecuteParams['asset'];
+  requiredUsdaio: bigint;
+  priorityFee: bigint;
+}
+
+// ─── Protocol defaults ────────────────────────────────────────────────────────
 const DOMAIN_RESEARCH = 1n;
 const TIER_FAST       = 0;
-const PROPOSAL_URI    = 'content://proposals/review-bounty-placeholder';
 
-/** ETH slippage: send 10% more ETH than the rate-based estimate. */
-const ETH_SLIPPAGE_PCT = 1.1;
+/** ETH slippage: thin Sepolia V4 liquidity needs a wider exact-output buffer; unused ETH is refunded. */
+const ETH_SLIPPAGE_PCT = 1.25;
+const GAS_LIMIT_BUFFER_NUMERATOR = 110n;
+const GAS_LIMIT_BUFFER_DENOMINATOR = 100n;
+const WALLET_LOG_PREFIX = '[DAIO][wallet]';
+
+function logWallet(event: string, payload: Record<string, unknown>) {
+  console.debug(`${WALLET_LOG_PREFIX} ${event}`, payload);
+}
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
+/** Parse RequestPaid(requester, requestId, paymentToken, amountPaid) from receipt logs. */
+function parseRequestIdFromReceipt(receipt: TransactionReceipt): bigint {
+  for (const log of receipt.logs) {
+    try {
+      const logWithTopics = log as unknown as { topics: readonly `0x${string}`[]; data: `0x${string}` };
+      const decoded = decodeEventLog({
+        abi: PAYMENT_ROUTER_ABI,
+        eventName: 'RequestPaid',
+        topics: logWithTopics.topics as [`0x${string}`, ...`0x${string}`[]],
+        data: logWithTopics.data,
+      });
+      if (decoded.args.requestId !== undefined) return decoded.args.requestId as bigint;
+    } catch {
+      // not the RequestPaid event
+    }
+  }
+  return 0n;
+}
+
 export function usePayReviewBounty(): PayReviewBountyResult {
-  const [step,   setStep]   = useState<PaymentStep>('idle');
-  const [txHash, setTxHash] = useState('');
-  const [error,  setError]  = useState<string | null>(null);
+  const [step,      setStep]      = useState<PaymentStep>('idle');
+  const [txHash,    setTxHash]    = useState('');
+  const [requestId, setRequestId] = useState<bigint>(0n);
+  const [error,     setError]     = useState<string | null>(null);
 
   const chainId = useChainId();
   const publicClient = usePublicClient();
@@ -80,29 +126,44 @@ export function usePayReviewBounty(): PayReviewBountyResult {
   const reset = useCallback(() => {
     setStep('idle');
     setTxHash('');
+    setRequestId(0n);
     setError(null);
   }, []);
 
   const execute = useCallback(async (params: ExecuteParams) => {
     if (!publicClient) {
+      logWallet('execute:error', { reason: 'missing_public_client' });
       setError('No RPC client available. Check your network.');
       setStep('error');
-      return;
+      return null;
     }
 
-    const { asset, bountyUsdaio, ethAmount, walletAddress, daioData } = params;
+    const { asset, bountyUsdaio, ethAmount, walletAddress, daioData, document } = params;
+
     const decimals       = daioData.usdaioDecimals > 0 ? daioData.usdaioDecimals : 18;
     const baseRequestFee = daioData.baseRequestFee ?? 0n;
 
     // Use 6 decimal places for float→wei to avoid float precision artefacts.
     const amountWei = parseUnits(bountyUsdaio.toFixed(Math.min(6, decimals)), decimals);
 
+    if (baseRequestFee <= 0n) {
+      logWallet('execute:error', { reason: 'base_fee_not_loaded' });
+      setError('Protocol fee is still loading. Please wait a moment and try again.');
+      setStep('error');
+      return null;
+    }
+
     // ── Validate minimum ─────────────────────────────────────────────────────
     if (baseRequestFee > 0n && amountWei < baseRequestFee) {
       const minHuman = Number(baseRequestFee) / 10 ** decimals;
+      logWallet('execute:error', {
+        reason: 'below_base_fee',
+        amountWei: amountWei.toString(),
+        baseRequestFee: baseRequestFee.toString(),
+      });
       setError(`Minimum bounty is ${minHuman} USDAIO (base request fee). Please increase the amount.`);
       setStep('error');
-      return;
+      return null;
     }
 
     // ── priorityFee = amount the user pays above the base fee ────────────────
@@ -110,20 +171,42 @@ export function usePayReviewBounty(): PayReviewBountyResult {
     const priorityFee    = amountWei > baseRequestFee ? amountWei - baseRequestFee : 0n;
     const requiredUsdaio = baseRequestFee + priorityFee; // identical to amountWei when valid
 
-    // Fixed proposal / rubric hashes (placeholder — replace with real content).
-    const proposalHash = keccak256(encodeAbiParameters([{ type: 'string' }], [PROPOSAL_URI]));
-    const rubricHash   = keccak256(encodeAbiParameters([{ type: 'string' }], [`${PROPOSAL_URI}:rubric`]));
+    const { proposalURI, proposalHash, rubricHash } = document;
 
     try {
+      logWallet('execute:start', {
+        asset,
+        chainId,
+        walletAddress,
+        proposalURI,
+        proposalHash,
+        rubricHash,
+        bountyUsdaio,
+        amountWei: amountWei.toString(),
+        baseRequestFee: baseRequestFee.toString(),
+        priorityFee: priorityFee.toString(),
+        requiredUsdaio: requiredUsdaio.toString(),
+      });
+
       // ═══════════════════════════════════════════════════════════════════════
       //  USDAIO payment flow
       // ═══════════════════════════════════════════════════════════════════════
       if (asset === 'USDAIO') {
         const currentAllowance = daioData.usdaioAllowance ?? 0n;
+        logWallet('USDAIO allowance checked', {
+          currentAllowance: currentAllowance.toString(),
+          requiredUsdaio: requiredUsdaio.toString(),
+          approvalNeeded: currentAllowance < requiredUsdaio,
+        });
 
         if (currentAllowance < requiredUsdaio) {
           // ── Step 1: Approve ─────────────────────────────────────────────
           setStep('approving');
+          logWallet('approve:start', {
+            token: CONTRACT_ADDRESS.usdaio,
+            spender: CONTRACT_ADDRESS.paymentRouter,
+            amount: requiredUsdaio.toString(),
+          });
           const approveTxHash = await writeContractAsync({
             address:      CONTRACT_ADDRESS.usdaio,
             abi:          USDAIO_ABI,
@@ -132,17 +215,32 @@ export function usePayReviewBounty(): PayReviewBountyResult {
             account:      walletAddress,
             chain:        sepolia,
           });
-          await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+          logWallet('approve:tx_submitted', { txHash: approveTxHash });
+          const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+          logWallet('approve:confirmed', {
+            txHash: approveTxHash,
+            blockNumber: approveReceipt.blockNumber.toString(),
+            status: approveReceipt.status,
+          });
         }
 
         // ── Step 2: createRequestWithUSDAIO ─────────────────────────────
         setStep('signing');
+        logWallet('createRequestWithUSDAIO:start', {
+          paymentRouter: CONTRACT_ADDRESS.paymentRouter,
+          proposalURI,
+          proposalHash,
+          rubricHash,
+          domainMask: DOMAIN_RESEARCH.toString(),
+          tier: TIER_FAST,
+          priorityFee: priorityFee.toString(),
+        });
         const payTxHash = await writeContractAsync({
           address:      CONTRACT_ADDRESS.paymentRouter,
           abi:          PAYMENT_ROUTER_ABI,
           functionName: 'createRequestWithUSDAIO',
           args: [
-            PROPOSAL_URI,
+            proposalURI,
             proposalHash,
             rubricHash,
             DOMAIN_RESEARCH,
@@ -153,10 +251,29 @@ export function usePayReviewBounty(): PayReviewBountyResult {
           chain:   sepolia,
         });
         setTxHash(payTxHash);
+        logWallet('createRequestWithUSDAIO:tx_submitted', { txHash: payTxHash });
 
         setStep('confirming');
-        await publicClient.waitForTransactionReceipt({ hash: payTxHash });
+        const receipt1 = await publicClient.waitForTransactionReceipt({ hash: payTxHash });
+        const confirmedRequestId = parseRequestIdFromReceipt(receipt1);
+        logWallet('createRequestWithUSDAIO:confirmed', {
+          txHash: payTxHash,
+          requestId: confirmedRequestId.toString(),
+          blockNumber: receipt1.blockNumber.toString(),
+          status: receipt1.status,
+        });
+        setRequestId(confirmedRequestId);
         setStep('confirmed');
+        return {
+          txHash: payTxHash,
+          requestId: confirmedRequestId,
+          proposalURI,
+          proposalHash,
+          rubricHash,
+          asset,
+          requiredUsdaio,
+          priorityFee,
+        };
       }
 
       // ═══════════════════════════════════════════════════════════════════════
@@ -176,6 +293,11 @@ export function usePayReviewBounty(): PayReviewBountyResult {
           priorityFee,    // ← dynamic
           chainId,
         });
+        logWallet('ETH intent hash computed', {
+          intentHash,
+          requiredUsdaio: requiredUsdaio.toString(),
+          priorityFee: priorityFee.toString(),
+        });
 
         // ── Compute ETH max from requiredUsdaio using the live pool rate ────
         //    (more accurate than using the user-typed ETH amount, which was
@@ -193,6 +315,12 @@ export function usePayReviewBounty(): PayReviewBountyResult {
           (ethNeededHuman * ETH_SLIPPAGE_PCT).toFixed(9),
           18,
         );
+        logWallet('ETH quote computed', {
+          effectiveRate,
+          ethNeededHuman,
+          ethAmountMax: ethAmountMax.toString(),
+          slippagePct: ETH_SLIPPAGE_PCT,
+        });
 
         // ── Build Universal Router calldata for the V4 swap ─────────────────
         const routerCalldata = buildV4RouterCalldata({
@@ -200,16 +328,50 @@ export function usePayReviewBounty(): PayReviewBountyResult {
           amountInMaximum: ethAmountMax,
           intentHash,
         });
+        logWallet('ETH router calldata built', {
+          calldataBytes: Math.max(0, (routerCalldata.length - 2) / 2),
+        });
 
         // ── createRequestWithETH (payable) ──────────────────────────────────
         setStep('signing');
+        const ethGasEstimate = await publicClient.estimateContractGas({
+          address:      CONTRACT_ADDRESS.paymentRouter,
+          abi:          PAYMENT_ROUTER_ABI,
+          functionName: 'createRequestWithETH',
+          args: [
+            routerCalldata,
+            proposalURI,
+            proposalHash,
+            rubricHash,
+            DOMAIN_RESEARCH,
+            TIER_FAST,
+            priorityFee,
+          ],
+          value:   ethAmountMax,
+          account: walletAddress,
+        });
+        const ethGasLimit = (ethGasEstimate * GAS_LIMIT_BUFFER_NUMERATOR) / GAS_LIMIT_BUFFER_DENOMINATOR;
+        logWallet('createRequestWithETH:gas_estimated', {
+          gasEstimate: ethGasEstimate.toString(),
+          gasLimit: ethGasLimit.toString(),
+        });
+        logWallet('createRequestWithETH:start', {
+          paymentRouter: CONTRACT_ADDRESS.paymentRouter,
+          value: ethAmountMax.toString(),
+          proposalURI,
+          proposalHash,
+          rubricHash,
+          domainMask: DOMAIN_RESEARCH.toString(),
+          tier: TIER_FAST,
+          priorityFee: priorityFee.toString(),
+        });
         const payTxHash = await writeContractAsync({
           address:      CONTRACT_ADDRESS.paymentRouter,
           abi:          PAYMENT_ROUTER_ABI,
           functionName: 'createRequestWithETH',
           args: [
             routerCalldata,
-            PROPOSAL_URI,
+            proposalURI,
             proposalHash,
             rubricHash,
             DOMAIN_RESEARCH,
@@ -217,14 +379,34 @@ export function usePayReviewBounty(): PayReviewBountyResult {
             priorityFee,  // ← dynamic
           ],
           value:   ethAmountMax,
+          gas:     ethGasLimit,
           account: walletAddress,
           chain:   sepolia,
         });
         setTxHash(payTxHash);
+        logWallet('createRequestWithETH:tx_submitted', { txHash: payTxHash });
 
         setStep('confirming');
-        await publicClient.waitForTransactionReceipt({ hash: payTxHash });
+        const receipt2 = await publicClient.waitForTransactionReceipt({ hash: payTxHash });
+        const confirmedRequestId = parseRequestIdFromReceipt(receipt2);
+        logWallet('createRequestWithETH:confirmed', {
+          txHash: payTxHash,
+          requestId: confirmedRequestId.toString(),
+          blockNumber: receipt2.blockNumber.toString(),
+          status: receipt2.status,
+        });
+        setRequestId(confirmedRequestId);
         setStep('confirmed');
+        return {
+          txHash: payTxHash,
+          requestId: confirmedRequestId,
+          proposalURI,
+          proposalHash,
+          rubricHash,
+          asset,
+          requiredUsdaio,
+          priorityFee,
+        };
       }
     } catch (err: unknown) {
       const msg =
@@ -235,10 +417,15 @@ export function usePayReviewBounty(): PayReviewBountyResult {
           : 'Transaction failed';
       // Surface short reason from wallet/contract if available.
       const shortMsg = msg.length > 200 ? msg.slice(0, 200) + '…' : msg;
+      logWallet('execute:failed', {
+        asset,
+        message: shortMsg,
+      });
       setError(shortMsg);
       setStep('error');
+      return null;
     }
   }, [chainId, publicClient, writeContractAsync]);
 
-  return { step, txHash, error, execute, reset };
+  return { step, txHash, requestId, error, execute, reset };
 }

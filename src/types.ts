@@ -1,6 +1,7 @@
 
 export type SimulationPhase =
   | 'IDLE'
+  | 'QUEUED'
   | 'SELECTION'
   | 'MOVING_TO_ROOMS'
   | 'ROUND_1'
@@ -78,6 +79,7 @@ export interface ReviewerNodeRound2 {
 
 export interface ReviewerNode {
   id: string;
+  agentAddress?: `0x${string}`;
   name: string;
   avatar?: string;
   sprite?: string;
@@ -202,6 +204,7 @@ export interface Coordinates {
 
 export interface AICharacter {
   id: string;
+  agentAddress?: `0x${string}`;
   name: string;
   avatar?: string;
   sprite?: string;

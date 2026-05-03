@@ -1,11 +1,12 @@
 import type { AICharacter, Audit, ReviewGamePhase, ReviewerNode, ReviewerReputation, ReviewRoundState } from '../types';
 
 export const SCORE_SCALE = 10000;
+// Frontend fallback: five spawned agents with a three-reviewer committee.
 export const REVIEWER_COUNT = 3;
 export const TOTAL_NODE_COUNT = 5;
-export const REVIEW_VRF_PROBABILITY = 0.8;
+export const REVIEW_VRF_PROBABILITY = REVIEWER_COUNT / TOTAL_NODE_COUNT;
 export const AUDIT_VRF_PROBABILITY = 1.0;
-export const AUDIT_QUORUM = 4;
+export const AUDIT_QUORUM = 3;
 export const MAX_CONCURRENT_REVIEWS = 2;
 export const CONTRIBUTION_THRESHOLD = 3000;
 export const MAX_AUDIT_SCORE = 10000;

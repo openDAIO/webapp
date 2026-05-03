@@ -18,6 +18,15 @@ import { useWallet } from '../services/wallet/useWallet';
 import { useDaioData } from '../services/daio/useDaioData';
 import { usePayReviewBounty } from '../services/daio/usePayReviewBounty';
 import type { ActiveReviewRoomId } from '../constants/reviewRoomScenes';
+import {
+  convertFileToMarkdown,
+  makeProposalId,
+  recoverRequestDocumentFromTx,
+  rubricHashForProposalId,
+  submitRequestDocument,
+  type SubmitDocumentResult,
+  uploadProposal,
+} from '../services/daio/contentApi';
 
 export type PaymentAsset = 'USDAIO' | 'ETH';
 
@@ -26,6 +35,9 @@ export interface ConfirmedReviewBounty {
   asset: 'USDAIO';
   network: string;
   txHash: string;
+  requestId?: string;
+  proposalURI?: string;
+  proposalHash?: string;
   paidWith?: {
     asset: 'ETH';
     amount: number;
@@ -39,20 +51,36 @@ interface ReviewBountyGateOverlayProps {
   roomId: ActiveReviewRoomId;
   reviewBounty: ConfirmedReviewBounty | null;
   onConfirmed: (reviewBounty: ConfirmedReviewBounty) => void;
-  onSubmitPaper: (title: string, link: string) => void;
+  onSubmitPaper: (title: string, link: string, reviewBounty?: ConfirmedReviewBounty) => void;
   onBack: () => void;
 }
 
 type PaymentStep = 'idle' | 'approving' | 'signing' | 'confirming' | 'confirmed' | 'error';
 
+interface PreparedPaper {
+  title: string;
+  fileName: string;
+  fileSize: number;
+  markdown: string;
+  proposalId: string;
+  proposalURI: string;
+  proposalHash: `0x${string}`;
+  rubricHash: `0x${string}`;
+}
+
 const ROOM_BOUNTY_USDAIO: Record<ActiveReviewRoomId, number> = {
-  paper: 10,
-  judgment: 20,
+  paper: 100,
+  judgment: 100,
 };
 const NETWORK_FEE_NATIVE = 0.0008;
 const NETWORK_FEE_SYMBOL = 'ETH';
 const NETWORK_NAME = 'Ethereum Sepolia';
 const UNISWAP_V4_HOOK_LABEL = 'Uniswap V4 Hook';
+const GATE_LOG_PREFIX = '[DAIO][gate]';
+
+function logGate(event: string, payload: Record<string, unknown>) {
+  console.debug(`${GATE_LOG_PREFIX} ${event}`, payload);
+}
 
 /** Rate helpers — accept the effective rate from chain data. */
 function usdaioReceivedForEth(eth: number, effectiveRate: number) {
@@ -91,7 +119,6 @@ function formatFileSize(bytes: number) {
 
 export default function ReviewBountyGateOverlay({
   roomId,
-  reviewBounty,
   onConfirmed,
   onSubmitPaper,
   onBack,
@@ -111,7 +138,8 @@ export default function ReviewBountyGateOverlay({
     ? daioData.poolRateUsdaioPerEth
     : daioData.effectiveUsdaioPerEth;
   const usdaioBalanceFormatted = daioData.usdaioBalanceFormatted;
-  const isPoolDataLoading = daioData.isLoading;
+  const hasProtocolFeeLoaded = daioData.baseRequestFee !== undefined && daioData.baseRequestFee > 0n;
+  const isPoolDataLoading = daioData.isLoading || !hasProtocolFeeLoaded;
 
   const payment = usePayReviewBounty();
   const paymentStep = payment.step as PaymentStep;
@@ -119,8 +147,11 @@ export default function ReviewBountyGateOverlay({
 
   const [paymentAsset, setPaymentAsset] = useState<PaymentAsset>('USDAIO');
   const [paperFile, setPaperFile] = useState<File | null>(null);
+  const [preparedPaper, setPreparedPaper] = useState<PreparedPaper | null>(null);
   const [isPaperDragActive, setIsPaperDragActive] = useState(false);
   const [isPaperSubmitting, setIsPaperSubmitting] = useState(false);
+  const [isDocumentRegistering, setIsDocumentRegistering] = useState(false);
+  const [paperSubmitError, setPaperSubmitError] = useState<string | null>(null);
   const [scannerImageError, setScannerImageError] = useState(false);
   const [bountyUsdaio, setBountyUsdaio] = useState(() => ROOM_BOUNTY_USDAIO[roomId]);
   /**
@@ -135,7 +166,6 @@ export default function ReviewBountyGateOverlay({
   /** Rate row: toggle quote direction (1 ETH → USDAIO vs 1 USDAIO → ETH). */
   const [invertRateQuote, setInvertRateQuote] = useState(false);
   const paperFileInputRef = useRef<HTMLInputElement | null>(null);
-  const timersRef = useRef<number[]>([]);
   const usdaioDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ethDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -157,11 +187,14 @@ export default function ReviewBountyGateOverlay({
   useEffect(() => {
     const next = ROOM_BOUNTY_USDAIO[roomId];
     setBountyUsdaio(next);
+    setPaperFile(null);
+    setPreparedPaper(null);
+    setPaperSubmitError(null);
     syncEthFromUsdaio(next, effectiveRate);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  // When the on-chain rate refreshes (every 10 s): update ETH estimate.
+  // When the on-chain rate refreshes (every 5 s): update ETH estimate.
   // Deliberately excludes bountyUsdaio so we don't re-run on every USDAIO keystroke.
   useEffect(() => {
     if (effectiveRate > 0) {
@@ -177,32 +210,26 @@ export default function ReviewBountyGateOverlay({
   const settledUsdaio = bountyUsdaio;
   const balanceForAsset = isEthMode ? walletBalance : usdaioBalanceFormatted;
   const balanceSymbolForAsset = isEthMode ? walletBalanceSymbol : 'USDAIO';
-  const minBountyUsdaio = daioData.baseRequestFeeFormatted > 0 ? daioData.baseRequestFeeFormatted : 0;
+  const minBountyUsdaio = hasProtocolFeeLoaded && daioData.baseRequestFeeFormatted > 0 ? daioData.baseRequestFeeFormatted : 0;
   const isAmountValid =
+    hasProtocolFeeLoaded &&
     Number.isFinite(amount) &&
     amount > 0 &&
     bountyUsdaio > 0 &&
     (minBountyUsdaio === 0 || bountyUsdaio >= minBountyUsdaio) &&
     amount <= balanceForAsset;
-  const isPaymentInProgress = paymentStep !== 'idle' && paymentStep !== 'error';
-  const canConfirm = isAmountValid && paymentStep === 'idle' && isWalletConnected;
+  const canConfirm =
+    Boolean(preparedPaper) &&
+    isAmountValid &&
+    paymentStep === 'idle' &&
+    isWalletConnected &&
+    !isDocumentRegistering;
 
   // On-chain request state (persists across refreshes via multicall)
   const onChainProcessing = daioData.latestRequestProcessing;
-  const onChainCompleted  = daioData.latestRequestCompleted;
   const onChainRequestId  = daioData.latestRequestId;
   /** true when the wallet has a live in-progress request on-chain */
   const isOnChainInProgress = isWalletConnected && onChainProcessing;
-  /**
-   * Show the "confirmed / upload paper" view when:
-   *   - local session has confirmed payment, OR
-   *   - the on-chain state shows processing/completed (survives page reload)
-   */
-  const isReviewBountyConfirmed =
-    Boolean(reviewBounty) ||
-    paymentStep === 'confirmed' ||
-    (isWalletConnected && (onChainProcessing || onChainCompleted) && onChainRequestId > 0n);
-
   const ethPerOneUsdaio = effectiveRate > 0 ? 1 / effectiveRate : 0;
 
   const rateDisplayLine = useMemo(() => {
@@ -214,7 +241,6 @@ export default function ReviewBountyGateOverlay({
 
   useEffect(() => {
     return () => {
-      timersRef.current.forEach((timer) => window.clearTimeout(timer));
       if (usdaioDebounceRef.current !== null) clearTimeout(usdaioDebounceRef.current);
       if (ethDebounceRef.current !== null) clearTimeout(ethDebounceRef.current);
     };
@@ -228,8 +254,9 @@ export default function ReviewBountyGateOverlay({
 
   const handlePaperFileSelect = (file: File | null) => {
     if (!file) return;
-
     setPaperFile(file);
+    setPreparedPaper(null);
+    setPaperSubmitError(null);
   };
 
   const handlePaperFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -238,6 +265,8 @@ export default function ReviewBountyGateOverlay({
 
   const handlePaperFileRemove = () => {
     setPaperFile(null);
+    setPreparedPaper(null);
+    setPaperSubmitError(null);
     setIsPaperDragActive(false);
     if (paperFileInputRef.current) {
       paperFileInputRef.current.value = '';
@@ -266,6 +295,7 @@ export default function ReviewBountyGateOverlay({
 
   const helperText = useMemo(() => {
     if (!isWalletConnected) return 'Connect your wallet to fund the review bounty.';
+    if (!hasProtocolFeeLoaded) return 'Loading protocol base fee from DAIOCore. Please wait a moment.';
     if (!Number.isFinite(bountyUsdaio) || bountyUsdaio <= 0) return 'Enter a valid review bounty amount.';
     if (!Number.isFinite(amount) || amount <= 0) return `Enter a valid ${inputSymbol} amount.`;
     if (minBountyUsdaio > 0 && bountyUsdaio < minBountyUsdaio) {
@@ -287,26 +317,83 @@ export default function ReviewBountyGateOverlay({
     inputSymbol,
     isEthMode,
     isWalletConnected,
+    hasProtocolFeeLoaded,
     minBountyUsdaio,
   ]);
 
-  const handleConfirm = () => {
-    if (!canConfirm || !wallet.address) return;
+  const handleConfirm = async () => {
+    if (!canConfirm || !wallet.address || !preparedPaper) return;
 
-    void payment.execute({
-      asset:        paymentAsset,
-      bountyUsdaio: bountyUsdaio,
-      ethAmount:    parseFloat(ethInputStr) || ethPayAmount,
+    setPaperSubmitError(null);
+    logGate('payment:start', {
+      roomId,
+      asset: paymentAsset,
+      bountyUsdaio,
       walletAddress: wallet.address,
+      proposalId: preparedPaper.proposalId,
+      proposalURI: preparedPaper.proposalURI,
+      proposalHash: preparedPaper.proposalHash,
+      rubricHash: preparedPaper.rubricHash,
+    });
+    const result = await payment.execute({
+      asset:          paymentAsset,
+      bountyUsdaio:   bountyUsdaio,
+      ethAmount:      parseFloat(ethInputStr) || ethPayAmount,
+      walletAddress:  wallet.address,
       daioData,
-    }).then(() => {
-      // On success the step is 'confirmed' — notify parent and refresh chain data.
-      daioData.refresh();
-      onConfirmed({
+      document: {
+        proposalURI:  preparedPaper.proposalURI,
+        proposalHash: preparedPaper.proposalHash,
+        rubricHash:   preparedPaper.rubricHash,
+      },
+    });
+    if (!result) return;
+
+    setIsDocumentRegistering(true);
+    try {
+      let registeredDocument: SubmitDocumentResult;
+
+      try {
+        if (result.requestId <= 0n) {
+          throw new Error('RequestPaid event was not found in the payment receipt.');
+        }
+
+        logGate('document-register:start', {
+          requestId: result.requestId.toString(),
+          txHash: result.txHash,
+          requester: wallet.address,
+          proposalHash: preparedPaper.proposalHash,
+        });
+        registeredDocument = await submitRequestDocument({
+          requestId: result.requestId.toString(),
+          txHash:    result.txHash,
+          requester: wallet.address,
+          text:      preparedPaper.markdown,
+          mimeType:  'text/markdown',
+        });
+      } catch (registrationErr) {
+        logGate('document-register:recover_start', {
+          requestId: result.requestId > 0n ? result.requestId.toString() : undefined,
+          txHash: result.txHash,
+          reason: registrationErr instanceof Error ? registrationErr.message : String(registrationErr),
+        });
+        registeredDocument = await recoverRequestDocumentFromTx({
+          txHash:    result.txHash,
+          requester: wallet.address,
+          id:        preparedPaper.proposalId,
+          text:      preparedPaper.markdown,
+          mimeType:  'text/markdown',
+        });
+      }
+
+      const confirmedBounty: ConfirmedReviewBounty = {
         amount: settledUsdaio,
         asset:  'USDAIO',
         network: NETWORK_NAME,
-        txHash:  payment.txHash,
+        txHash:  result.txHash,
+        requestId: registeredDocument.verified.requestId,
+        proposalURI: registeredDocument.verified.proposalURI || result.proposalURI,
+        proposalHash: registeredDocument.verified.proposalHash || result.proposalHash,
         paidWith: isEthMode
           ? {
               asset: 'ETH',
@@ -316,20 +403,87 @@ export default function ReviewBountyGateOverlay({
               hook: UNISWAP_V4_HOOK_LABEL,
             }
           : undefined,
+      };
+
+      logGate('document-register:ok', {
+        requestId: confirmedBounty.requestId,
+        txHash: confirmedBounty.txHash,
+        proposalURI: confirmedBounty.proposalURI,
+        proposalHash: confirmedBounty.proposalHash,
       });
-    });
+      setIsDocumentRegistering(false);
+      daioData.refresh();
+      onConfirmed(confirmedBounty);
+      onSubmitPaper(
+        preparedPaper.title,
+        `${preparedPaper.fileName} (${formatFileSize(preparedPaper.fileSize)})`,
+        confirmedBounty,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Document registration failed.';
+      logGate('document-register:failed', {
+        requestId: result.requestId.toString(),
+        message: msg,
+      });
+      setPaperSubmitError(msg);
+      setIsDocumentRegistering(false);
+    }
   };
 
-  const handlePaperSubmit = () => {
+  const handlePaperSubmit = async () => {
     if (!paperFile || isPaperSubmitting) return;
 
     const paperTitle = fileNameToPaperTitle(paperFile.name) || paperFile.name;
 
     setScannerImageError(false);
     setIsPaperSubmitting(true);
-    timersRef.current.push(window.setTimeout(() => {
-      onSubmitPaper(paperTitle, `${paperFile.name} (${formatFileSize(paperFile.size)})`);
-    }, 1400));
+    setPaperSubmitError(null);
+
+    try {
+      logGate('paper-prepare:start', {
+        roomId,
+        filename: paperFile.name,
+        bytes: paperFile.size,
+        mimeType: paperFile.type || 'application/octet-stream',
+      });
+      const bodyText = (await convertFileToMarkdown(paperFile)).markdown;
+      if (!bodyText) {
+        throw new Error('No document text to submit.');
+      }
+
+      const proposalId = makeProposalId(paperFile.name);
+      const proposal = await uploadProposal({
+        id:       proposalId,
+        text:     bodyText,
+        mimeType: 'text/markdown',
+      });
+
+      setPreparedPaper({
+        title: paperTitle,
+        fileName: paperFile.name,
+        fileSize: paperFile.size,
+        markdown: bodyText,
+        proposalId: proposal.id,
+        proposalURI: proposal.uri,
+        proposalHash: proposal.hash,
+        rubricHash: rubricHashForProposalId(proposal.id),
+      });
+      logGate('paper-prepare:ok', {
+        proposalId: proposal.id,
+        proposalURI: proposal.uri,
+        proposalHash: proposal.hash,
+        markdownChars: bodyText.length,
+      });
+      setIsPaperSubmitting(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Paper submission failed.';
+      logGate('paper-prepare:failed', {
+        filename: paperFile.name,
+        message: msg,
+      });
+      setPaperSubmitError(msg);
+      setIsPaperSubmitting(false);
+    }
   };
 
   return (
@@ -342,7 +496,7 @@ export default function ReviewBountyGateOverlay({
       >
         <PixelFrameChrome round={2} />
 
-        {isReviewBountyConfirmed ? (
+        {!preparedPaper ? (
           <>
           <button
             type="button"
@@ -391,22 +545,14 @@ export default function ReviewBountyGateOverlay({
                 outerShadowColor="transparent"
               >
                 <div className="flex items-center justify-between gap-3 font-bold">
-                  <span>Review Bounty Paid</span>
+                  <span>Step 1 · Prepare Paper</span>
                   <div className="flex items-center gap-2">
-                    {onChainRequestId > 0n && (
-                      <span className="text-[11px] font-bold text-[#6b563f]">
-                        Request #{onChainRequestId.toString()}
-                      </span>
-                    )}
-                    <span>{(reviewBounty?.amount ?? settledUsdaio).toFixed(2)} USDAIO</span>
+                    <span>Hash before payment</span>
                   </div>
                 </div>
-                {reviewBounty?.paidWith && (
-                  <div className="mt-1 flex items-center gap-1 text-[11px] font-bold text-[#2f5d7e]">
-                    <Zap size={12} />
-                    Auto-swapped from {reviewBounty.paidWith.amount.toFixed(4)} ETH via {reviewBounty.paidWith.hook}
-                  </div>
-                )}
+                <div className="mt-1 text-[11px] font-bold text-[#2f5d7e]">
+                  The converted Markdown hash is used as the on-chain proposal hash, so payment and document verification match.
+                </div>
               </PixelFrame>
 
                 <label className="block text-sm font-bold" htmlFor="paper-file">
@@ -485,9 +631,15 @@ export default function ReviewBountyGateOverlay({
                   </div>
                 )}
 
+              {paperSubmitError && (
+                <div className="mb-2 rounded border border-[#b83030]/40 bg-[#b83030]/10 px-3 py-2 text-xs text-[#8a1a1a]">
+                  {paperSubmitError}
+                </div>
+              )}
+
               <button
                 type="button"
-                onClick={handlePaperSubmit}
+                onClick={() => { void handlePaperSubmit(); }}
                 disabled={!paperFile || isPaperSubmitting}
                 className="pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0"
               >
@@ -505,12 +657,12 @@ export default function ReviewBountyGateOverlay({
                   {isPaperSubmitting ? (
                     <>
                       <Loader2 size={18} className="animate-spin" />
-                      Submitting Paper
+                      Preparing Paper
                     </>
                   ) : (
                     <>
                       <Upload size={18} />
-                      Upload & Submit Paper
+                      Upload Paper & Continue
                     </>
                   )}
                 </span>
@@ -548,6 +700,7 @@ export default function ReviewBountyGateOverlay({
             </span>
           </div>
         )}
+
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#2f5d7e]">
@@ -562,7 +715,7 @@ export default function ReviewBountyGateOverlay({
           <button
             type="button"
             onClick={onBack}
-            disabled={paymentStep !== 'idle'}
+            disabled={paymentStep !== 'idle' || isDocumentRegistering}
             className="pixel-frame flex h-8 w-8 flex-shrink-0 items-center justify-center text-[#5f211c] transition-transform hover:-translate-y-0.5 hover:brightness-105 disabled:opacity-50 disabled:hover:translate-y-0"
             aria-label="Back to room selection"
             title="Back to room selection"
@@ -687,6 +840,54 @@ export default function ReviewBountyGateOverlay({
             <div className="mt-2 text-lg font-bold">Gas {NETWORK_FEE_NATIVE.toFixed(4)} {NETWORK_FEE_SYMBOL}</div>
           </PixelFrame>
         </div>
+
+        {preparedPaper && (
+          <PixelFrame
+            className="mb-4 p-3 text-sm text-[#2f6f35]"
+            color="#8ab66b"
+            fillColor="#f4ffd9"
+            round={2}
+            thickness={4}
+            outerShadowOffsetX={0}
+            outerShadowOffsetY={0}
+            outerShadowColor="transparent"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="mb-1 flex items-center gap-2 font-bold">
+                  <FileText size={16} />
+                  <span className="truncate">{preparedPaper.fileName}</span>
+                </div>
+                <div className="text-[11px] font-bold text-[#6b563f]">
+                  Proposal #{preparedPaper.proposalId} · {formatFileSize(preparedPaper.fileSize)}
+                </div>
+                <div className="mt-1 truncate text-[10px] font-bold text-[#2f5d7e]">
+                  Hash: {preparedPaper.proposalHash}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (paymentStep === 'idle' && !isDocumentRegistering) setPreparedPaper(null);
+                }}
+                disabled={paymentStep !== 'idle' || isDocumentRegistering}
+                className="pixel-frame flex-shrink-0 px-3 py-1.5 text-xs font-bold text-[#5f211c] transition-transform hover:-translate-y-0.5 hover:brightness-105 disabled:opacity-50 disabled:hover:translate-y-0"
+              >
+                <PixelFrameChrome
+                  round={1}
+                  thickness={3}
+                  color="#9c342d"
+                  fillColor="#f0c0b1"
+                  innerHighlightColor="rgba(255, 255, 255, 0.24)"
+                  outerShadowColor="rgba(95, 33, 28, 0.16)"
+                  outerShadowOffsetX={1}
+                  outerShadowOffsetY={1}
+                />
+                <span className="relative z-40">Change Paper</span>
+              </button>
+            </div>
+          </PixelFrame>
+        )}
 
         <div className="mb-3">
           <div className="mb-2 flex items-end justify-between gap-2">
@@ -1013,13 +1214,18 @@ export default function ReviewBountyGateOverlay({
               ⚠ {payment.error}
             </div>
           )}
+          {paperSubmitError && (
+            <div className="mt-2 break-words text-[10px] font-bold text-[#9c342d]">
+              ⚠ {paperSubmitError}
+            </div>
+          )}
         </PixelFrame>
 
         {isWalletConnected ? (
           <button
             type="button"
-            onClick={paymentStep === 'error' ? payment.reset : handleConfirm}
-            disabled={!canConfirm && paymentStep !== 'error'}
+            onClick={paymentStep === 'error' ? payment.reset : () => { void handleConfirm(); }}
+            disabled={isDocumentRegistering || (!canConfirm && paymentStep !== 'error')}
             className={`pixel-frame flex w-full items-center justify-center gap-2 px-4 py-3 text-lg font-bold text-[#23351f] transition-transform hover:-translate-y-0.5 hover:brightness-105 active:translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 ${paymentStep === 'error' ? 'opacity-90' : ''}`}
           >
             <PixelFrameChrome
@@ -1033,31 +1239,43 @@ export default function ReviewBountyGateOverlay({
               outerShadowOffsetY={4}
             />
             <span className="relative z-40 flex items-center justify-center gap-2">
-            {paymentStep === 'idle' && (
+            {isDocumentRegistering && (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Registering Document…
+              </>
+            )}
+            {!isDocumentRegistering && paymentStep === 'idle' && (
               <>
                 {isEthMode ? <Zap size={18} /> : null}
                 {isEthMode ? 'Swap & Pay Review Bounty' : 'Pay Review Bounty'}
               </>
             )}
-            {paymentStep === 'approving' && (
+            {!isDocumentRegistering && paymentStep === 'approving' && (
               <>
                 <Loader2 size={18} className="animate-spin" />
                 Approve USDAIO…
               </>
             )}
-            {paymentStep === 'signing' && (
+            {!isDocumentRegistering && paymentStep === 'signing' && (
               <>
                 <Loader2 size={18} className="animate-spin" />
                 {isEthMode ? `Sign swap via ${UNISWAP_V4_HOOK_LABEL}…` : 'Sign payment in wallet…'}
               </>
             )}
-            {paymentStep === 'confirming' && (
+            {!isDocumentRegistering && paymentStep === 'confirming' && (
               <>
                 <Loader2 size={18} className="animate-spin" />
                 {isEthMode ? 'Confirming swap…' : 'Confirming payment…'}
               </>
             )}
-            {paymentStep === 'error' && (
+            {!isDocumentRegistering && paymentStep === 'confirmed' && (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Starting Review…
+              </>
+            )}
+            {!isDocumentRegistering && paymentStep === 'error' && (
               <>
                 ⚠ Failed — tap to retry
               </>
