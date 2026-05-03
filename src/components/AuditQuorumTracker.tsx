@@ -10,7 +10,7 @@ interface AuditQuorumTrackerProps {
   quorum: number;
   isActive: boolean;
   startDelayMs?: number;
-  /** On-chain audit participant count from DAIOCommitRevealManager (overrides local simulation count when provided). */
+  /** On-chain submitted audit report count from DAIOInfoReader.auditTargets(). */
   onChainAuditCount?: number;
 }
 
@@ -83,7 +83,7 @@ export default function AuditQuorumTracker({ audits, reviewers, quorum, isActive
             ? 'border-[#9effc2] bg-[#183224] text-[#9effc2]'
             : 'border-[#f1c46d] bg-[#332b1f] text-[#ffd98a]'
         }`}>
-          {isComplete ? 'Quorum Complete' : `First ${quorum} accepted`}
+          {isComplete ? 'Quorum Complete' : `First ${quorum} reports`}
         </div>
       </div>
 
