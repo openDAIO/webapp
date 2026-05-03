@@ -74,7 +74,8 @@ export default function NodeDetailDrawer({
   const profileImage = reviewerAssets?.idle ?? node.avatar ?? reviewerAssets?.portrait;
   const fallbackAvatar = node.avatar ?? reviewerAssets?.portrait ?? reviewerAssets?.idle;
   const reputationDelta = node.reputationAfter - node.reputationBefore;
-  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
+  const reputationDeltaScaled = (reputationDelta / 100).toFixed(2);
+  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDeltaScaled}` : reputationDeltaScaled;
 
   return (
     <>
@@ -301,7 +302,8 @@ function RoundHistoryScrollPanel({ children }: { children: ReactNode }) {
 
 function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluationResult; tokenFlow: number; agentReasons?: AgentReasons | null }) {
   const reputationDelta = node.reputationAfter - node.reputationBefore;
-  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
+  const reputationDeltaScaled = (reputationDelta / 100).toFixed(2);
+  const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDeltaScaled}` : reputationDeltaScaled;
   const reviewNode = node.reviewNode;
   const usesChainAccounting = node.rewardSource === 'chain';
   const stakeAsset = usesChainAccounting ? 'USDAIO' : 'TOK';

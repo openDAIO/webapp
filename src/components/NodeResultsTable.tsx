@@ -179,7 +179,11 @@ export default function NodeResultsTable({
                     <td className={cellClass}>
                       {isScoreboard ? (
                         <span className={`font-mono text-sm font-bold ${reputationTone}`}>
-                          {reputationChange > 0 ? `+${reputationChange}` : reputationChange < 0 ? reputationChange : '0'}
+                          {reputationChange > 0
+                            ? `+${(reputationChange / 100).toFixed(2)}`
+                            : reputationChange < 0
+                              ? (reputationChange / 100).toFixed(2)
+                              : '0'}
                         </span>
                       ) : (
                         <ReputationChangeBadge before={node.reputationBefore} after={node.reputationAfter} />
