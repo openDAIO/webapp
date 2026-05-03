@@ -5,7 +5,13 @@ import {
   RoundEvaluationHistory,
 } from '../types';
 
-export const OUTLIER_STDDEV_MULTIPLIER = 1;
+/**
+ * Maximum allowed absolute distance between a reviewer's final score and the
+ * consensus final score. A reviewer whose score deviates by this much (or more)
+ * is treated as an outlier in the UI: they get the penalty/slashed visual,
+ * lose reputation, and are excluded from the bounty redistribution.
+ */
+export const OUTLIER_FINAL_SCORE_DIFF = 10;
 export const SLASH_RATE = 0.4;
 export const OUTLIER_REPUTATION_PENALTY = 5;
 export const ELIGIBLE_REPUTATION_REWARD = 1;
@@ -38,15 +44,11 @@ export function calculateStandardDeviation(scores: number[], average = calculate
 
 export function detectOutliers(
   nodes: Pick<NodeEvaluationInput, 'id' | 'finalScore'>[],
-  average: number,
-  standardDeviation: number,
-  multiplier = OUTLIER_STDDEV_MULTIPLIER,
+  finalScore: number,
+  threshold = OUTLIER_FINAL_SCORE_DIFF,
 ) {
-  const thresholdLow = average - standardDeviation * multiplier;
-  const thresholdHigh = average + standardDeviation * multiplier;
-
   return nodes
-    .filter((node) => node.finalScore < thresholdLow || node.finalScore > thresholdHigh)
+    .filter((node) => Math.abs(node.finalScore - finalScore) >= threshold)
     .map((node) => node.id);
 }
 
@@ -58,7 +60,7 @@ export function calculateFinalSummary(
   const scores = nodes.map((node) => node.finalScore);
   const finalAverage = calculateAverage(scores);
   const standardDeviation = calculateStandardDeviation(scores, finalAverage);
-  const outlierIds = detectOutliers(nodes, finalAverage, standardDeviation);
+  const outlierIds = detectOutliers(nodes, finalAverage);
   const totalSlashedPool = nodes
     .filter((node) => outlierIds.includes(node.id))
     .reduce((sum, node) => sum + (node.stakeAmount ?? 0) * SLASH_RATE, 0);
@@ -67,8 +69,8 @@ export function calculateFinalSummary(
   return {
     finalAverage,
     standardDeviation,
-    outlierThresholdLow: finalAverage - standardDeviation * OUTLIER_STDDEV_MULTIPLIER,
-    outlierThresholdHigh: finalAverage + standardDeviation * OUTLIER_STDDEV_MULTIPLIER,
+    outlierThresholdLow: finalAverage - OUTLIER_FINAL_SCORE_DIFF,
+    outlierThresholdHigh: finalAverage + OUTLIER_FINAL_SCORE_DIFF,
     totalSlashedPool,
     eligibleNodeCount,
     redistributionPerNode: 0,
@@ -86,7 +88,7 @@ export function calculateSlashingAndRedistribution(
   reviewBountyAmount = 0,
 ): FinalResultCalculation {
   const summary = calculateFinalSummary(nodes, completedAt, reviewBountyAmount);
-  const outlierIds = new Set(detectOutliers(nodes, summary.finalAverage, summary.standardDeviation));
+  const outlierIds = new Set(detectOutliers(nodes, summary.finalAverage));
 
   return {
     summary,
