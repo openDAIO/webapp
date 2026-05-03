@@ -8,11 +8,12 @@ import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, DoorOpen, FileDown, LayoutDashboard } from 'lucide-react';
 import { useDaioData, type DaioData, type DaioReviewerProfile, type DaioReviewerRoundSnapshot } from './services/daio/useDaioData';
 import { getAgentStatuses, type AgentStatus } from './services/daio/contentApi';
-import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeEvaluationResult, ReviewGamePhase, ReviewRoundState, ReviewerNode, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
+import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeChatMessage, NodeEvaluationResult, ReviewGamePhase, ReviewRoundState, ReviewerNode, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
 import { buildAICharactersForRoom } from './data/mockCharacters';
 import { MOCK_FINAL_RESULT_INPUTS } from './data/mockFinalResults';
 import { buildNodeResultRows, type NodeEvaluationInput } from './utils/finalResults';
 import { useNodeChat } from './hooks/useNodeChat';
+import { downloadEvaluationPdf } from './services/reports/pdfReport';
 
 import Character from './components/Character';
 import ReviewBountyGateOverlay, { type ConfirmedReviewBounty } from './components/ReviewBountyGateOverlay';
@@ -55,6 +56,7 @@ import {
   ROUND_RESULT_HOLD_MS,
   ROUND_REVEAL_BUFFER_MS,
   ROUND_THREE_RESULT_HOLD_MS,
+  displayRoundNumber,
   roundProcessDurationMs,
 } from './constants/reviewFlowTiming';
 
@@ -599,124 +601,12 @@ function RoundScorePopup({ character, round, style }: { character: AICharacter; 
   );
 }
 
-function formatReportAmount(value: number, digits = 2) {
-  return Number.isFinite(value) ? value.toFixed(digits) : '0.00';
-}
-
-function reportTimestamp(value: number) {
-  return new Date(value).toLocaleString();
-}
-
 function slugifyReportName(value: string) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48) || 'review';
-}
-
-function buildEvaluationReport({
-  roomTitle,
-  roomDescription,
-  evaluationId,
-  finalResult,
-  logs,
-  reviewBounty,
-}: {
-  roomTitle: string;
-  roomDescription: string;
-  evaluationId: string;
-  finalResult: FinalResultState;
-  logs: LogEntry[];
-  reviewBounty: ConfirmedReviewBounty | null;
-}) {
-  const { summary, nodes } = finalResult;
-  const stakeAsset = summary.rewardSource === 'chain' ? summary.bountyAsset : 'TOK';
-  const lines: string[] = [
-    '# PixelReview Evaluation Report',
-    '',
-    `Generated: ${new Date().toLocaleString()}`,
-    `Evaluation ID: ${evaluationId}`,
-    `Review Room: ${roomTitle}`,
-    `Room Description: ${roomDescription}`,
-    '',
-    '## Final Result',
-    '',
-    `- Final Score: ${formatReportAmount(summary.finalAverage, 1)}`,
-    `- Standard Deviation: ${formatReportAmount(summary.standardDeviation, 2)}`,
-    `- Accepted Range: ${formatReportAmount(summary.outlierThresholdLow, 1)} - ${formatReportAmount(summary.outlierThresholdHigh, 1)}`,
-    `- Bounty Winners: ${summary.eligibleNodeCount} / ${nodes.length}`,
-    `- Reward Source: ${summary.rewardSource === 'chain' ? 'Contract accounting' : 'Frontend simulation'}`,
-    `- Reward Pool: ${formatReportAmount(summary.rewardPoolAmount ?? summary.reviewBountyAmount, 2)} ${summary.bountyAsset}`,
-    `- Protocol Fee: ${formatReportAmount(summary.protocolFeeAmount ?? 0, 2)} ${summary.bountyAsset}`,
-    `- Rewards Paid: ${formatReportAmount(summary.totalRewardPaidAmount ?? nodes.reduce((sum, node) => sum + node.rewardAmount, 0), 2)} ${summary.bountyAsset}`,
-    `- Slashed Stake Pool: ${formatReportAmount(summary.totalSlashedPool, 2)} ${stakeAsset}`,
-    `- Treasury Accrual: ${formatReportAmount(summary.treasuryAccrualAmount ?? 0, 2)} ${summary.bountyAsset}`,
-  ];
-
-  if (reviewBounty) {
-    lines.push(
-      '',
-      '## Bounty Payment',
-      '',
-      `- Amount: ${formatReportAmount(reviewBounty.amount, 2)} ${reviewBounty.asset}`,
-      `- Network: ${reviewBounty.network}`,
-      `- Transaction Hash: ${reviewBounty.txHash}`,
-    );
-  }
-
-  lines.push(
-    '',
-    '## Node Results',
-    '',
-    '| Node | Final Score | Status | Reputation | Stake | Reward | Slash |',
-    '| --- | ---: | --- | ---: | ---: | ---: | ---: |',
-    ...nodes.map((node) => {
-      const displayedReward = summary.rewardSource === 'chain' ? node.rewardAmount : node.bountyRewardAmount;
-      return `| ${node.name} | ${node.finalScore} | ${node.status} | ${node.reputationBefore} -> ${node.reputationAfter} | ${formatReportAmount(node.stakeAmount, 1)} ${stakeAsset} | ${formatReportAmount(displayedReward, 2)} ${summary.bountyAsset} | ${formatReportAmount(node.slashAmount, 2)} ${stakeAsset} |`;
-    }),
-    '',
-    '## Node Review History',
-  );
-
-  nodes.forEach((node) => {
-    lines.push(
-      '',
-      `### ${node.name}`,
-      '',
-      `Final Reasoning: ${node.finalReasoning}`,
-      '',
-    );
-
-    node.roundHistory.forEach((history) => {
-      lines.push(
-        `- ${history.title}`,
-        `  - Phase: ${history.phase}`,
-        `  - Score: ${history.scoreBefore !== undefined ? `${history.scoreBefore} -> ` : ''}${history.scoreAfter}`,
-        `  - Reasoning: ${history.reasoning}`,
-      );
-
-      if (history.discussedWith?.length) {
-        lines.push(`  - Discussed With: ${history.discussedWith.join(', ')}`);
-      }
-      if (history.discussionSummary) {
-        lines.push(`  - Discussion Summary: ${history.discussionSummary}`);
-      }
-      if (history.evidenceUsed?.length) {
-        lines.push(`  - Evidence Used: ${history.evidenceUsed.join(', ')}`);
-      }
-    });
-  });
-
-  lines.push(
-    '',
-    '## Event Log',
-    '',
-    ...logs.map((log) => `- [${reportTimestamp(log.timestamp)}] ${log.message}`),
-    '',
-  );
-
-  return lines.join('\n');
 }
 
 function buildRoundScore(char: AICharacter, round: number, conversation?: ConversationDrawerData): RoundScore {
@@ -764,7 +654,7 @@ function buildProtocolRoundScore(
       score,
       reasoning: `${char.name} submitted proposalScore ${reviewer.proposalScore}/10000 as an independent review.`,
       discussion: 'Independent proposal review. All selected reviewers have reviewerWeight 10000.',
-      changeReason: 'Round 1 consensus uses the median of individual proposal scores.',
+      changeReason: 'Round 0 consensus uses the median of individual proposal scores.',
     };
   }
 
@@ -791,7 +681,7 @@ function buildProtocolRoundScore(
     discussion: reviewer.reputation?.sampleCount === 0
       ? 'No prior samples: the current node reputation baseline was applied before final weighted median.'
       : 'Long-term reputation components adjusted the audit-based reviewer weight.',
-    changeReason: 'Round 3 consensus uses finalWeight based weighted median.',
+    changeReason: 'Round 2 consensus uses finalWeight based weighted median.',
   };
 }
 
@@ -1020,7 +910,7 @@ function ReputationWeightingPanel({ state }: { state: ReviewRoundState }) {
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-[#2f5d7e]">Reputation Weighting</div>
             <p className="mt-1 text-[10px] leading-snug text-[#6b563f]">
-              Round 2 weight x reputation = final weight.
+              Round 1 weight x reputation = final weight.
             </p>
           </div>
           <div className="border-2 border-[#d7b98f] bg-[#fffef3] px-2 py-1 text-right">
@@ -1958,26 +1848,24 @@ export default function App() {
     if (!finalResult) return;
 
     const room = REVIEW_ROOMS[selectedRoom];
-    const report = buildEvaluationReport({
-      roomTitle: room.title,
-      roomDescription: room.description,
-      evaluationId,
-      finalResult,
-      logs,
-      reviewBounty: roomReviewBounty,
-    });
-    const blob = new Blob([report], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
+    const qaByNodeId = finalResult.nodes.reduce<Record<string, NodeChatMessage[]>>((acc, node) => {
+      const state = nodeChat.getChatState(node);
+      if (state.messages.length > 0) acc[node.id] = state.messages;
+      return acc;
+    }, {});
     const dateStamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-
-    anchor.href = url;
-    anchor.download = `pixelreview-${slugifyReportName(room.title)}-${dateStamp}.md`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    addLog('Evaluation report downloaded.');
+    downloadEvaluationPdf(
+      {
+        roomTitle: room.title,
+        roomDescription: room.description,
+        evaluationId,
+        finalResult,
+        reviewBounty: roomReviewBounty,
+        qaByNodeId,
+      },
+      `opendaio-${slugifyReportName(room.title)}-${dateStamp}.pdf`,
+    );
+    addLog('Evaluation PDF report downloaded.');
   };
 
   const completeNodeSelection = useCallback(() => {
@@ -2037,7 +1925,7 @@ export default function App() {
         name: participant.name,
       })),
     });
-    addLog(`Round 1 queued for ${participants.length} selected review nodes.`);
+    addLog(`Round 0 queued for ${participants.length} selected review nodes.`);
   }, [addLog]);
 
   useEffect(() => {
@@ -2400,7 +2288,7 @@ export default function App() {
       () => {
         applyRoundScores(1);
         setRoundResultHoldRound(1);
-        addLog(`Round 1 ledger snapshot closed at ${daioData.roundAggregates.review.score.toString()}/10000.`);
+        addLog(`Round 0 ledger snapshot closed at ${daioData.roundAggregates.review.score.toString()}/10000.`);
       },
     );
 
@@ -2410,7 +2298,7 @@ export default function App() {
       () => {
         applyRoundScores(2);
         setRoundResultHoldRound(2);
-        addLog(`Round 2 audit consensus closed at ${daioData.roundAggregates.auditConsensus.score.toString()}/10000.`);
+        addLog(`Round 1 audit consensus closed at ${daioData.roundAggregates.auditConsensus.score.toString()}/10000.`);
       },
     );
 
@@ -2420,7 +2308,7 @@ export default function App() {
       () => {
         applyRoundScores(3);
         setRoundResultHoldRound(3);
-        addLog(`Round 3 reputation final closed at ${daioData.roundAggregates.reputationFinal.score.toString()}/10000.`);
+        addLog(`Round 2 reputation final closed at ${daioData.roundAggregates.reputationFinal.score.toString()}/10000.`);
       },
     );
   }, [
@@ -2566,7 +2454,7 @@ export default function App() {
         acceptedAudits: visibleAcceptedAudits,
         ignoredAudits,
       });
-      addLog(`Round 2 peer audit started. Audit quorum is ${chainAuditCount ?? acceptedAudits.length}/${effectiveAuditQuorum}.`);
+      addLog(`Round 1 peer audit started. Audit quorum is ${chainAuditCount ?? acceptedAudits.length}/${effectiveAuditQuorum}.`);
       visibleAcceptedAudits.forEach((audit) => {
         const fromName = protocolState?.reviewers.find((reviewer) => reviewer.id === audit.fromReviewerId)?.name ?? audit.fromReviewerId;
         const toName = protocolState?.reviewers.find((reviewer) => reviewer.id === audit.toReviewerId)?.name ?? audit.toReviewerId;
@@ -2582,7 +2470,7 @@ export default function App() {
           finalWeight: reviewer.round2?.finalWeight,
         })) ?? [],
       });
-      addLog('Round 3 reputation weighting started. Nodes return to their starting table seats before the final weighted review.');
+      addLog('Round 2 reputation weighting started. Nodes return to their starting table seats before the final weighted review.');
     }
 
     const moveDuration = Math.max(
@@ -2701,7 +2589,7 @@ export default function App() {
     if (roundResultHoldRound !== null) return undefined;
 
     if (phase === 'MOVING_TO_ROOMS') {
-      addLog('Round 1 started. Nodes are moving to their labs.');
+      addLog('Round 0 started. Nodes are moving to their labs.');
       const allCharacters = charactersRef.current;
       const activeCharacters = getReviewParticipants(allCharacters);
       const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
@@ -2728,7 +2616,7 @@ export default function App() {
             ? { ...character, status: 'THINKING' }
             : character);
         });
-        addLog('Round 1 started. Nodes are reviewing independently.');
+        addLog('Round 0 started. Nodes are reviewing independently.');
       }, moveDuration + ROUND_MOVEMENT_SETTLE_MS);
       return () => window.clearTimeout(timer);
     }
@@ -2933,7 +2821,7 @@ export default function App() {
                       exit={{ opacity: 0, scale: 1.08, y: -18 }}
                       transition={{ type: 'spring', damping: 20, stiffness: 260 }}
                     >
-                      <span className="text-5xl leading-none">Round {String(roundIntro.round).padStart(2, '0')} Start</span>
+                      <span className="text-5xl leading-none">Round {displayRoundNumber(roundIntro.round)} Start</span>
                       <span className="border-2 border-[#f1c46d] bg-[#332b1f] px-3 py-1.5 text-sm leading-none tracking-[0.18em] text-[#ffd98a] shadow-[2px_2px_0_rgba(7,17,31,0.55)]">
                         {roundIntroSubtitle(roundIntro.round)}
                       </span>
@@ -3052,7 +2940,7 @@ export default function App() {
                       <span className="relative z-40 flex flex-col items-center justify-center gap-1">
                         <FileDown size={20} />
                         <span>Download Report</span>
-                        <span className="text-[8px] opacity-80">Markdown file</span>
+                        <span className="text-[8px] opacity-80">PDF file</span>
                       </span>
                     </button>
                   )}
