@@ -227,13 +227,6 @@ function agentStatusByAddress(statuses: AgentStatus[]) {
   );
 }
 
-function activeAgentStatusAddresses(statuses: AgentStatus[]) {
-  const activeStatuses = new Set(['committed', 'revealed', 'finalized']);
-  return statuses
-    .filter((status) => isHexAddress(status.agent) && activeStatuses.has(status.status.toLowerCase()))
-    .map((status) => status.agent as `0x${string}`);
-}
-
 function numberFromContractScore(value: bigint) {
   return Number(value);
 }
@@ -1115,6 +1108,7 @@ export default function App() {
     [loadingRoom],
   );
   const reviewParticipants = useMemo(() => getReviewParticipants(characters), [characters]);
+  const selectedReviewCharacterCount = useMemo(() => getSelectedReviewNodes(characters).length, [characters]);
   const sceneCharacters = phase === 'IDLE' || phase === 'QUEUED' || phase === 'SELECTION' || phase === 'MOVING_TO_ROOMS' ? characters : reviewParticipants;
   const sideboardCharacters = characters;
   const selectedThinkingNode = useMemo(
@@ -1502,7 +1496,6 @@ export default function App() {
     const currentCharacters = charactersRef.current.length > 0
       ? charactersRef.current
       : buildAICharactersForRoom(selectedRoom).map(resetCharacter);
-    const activeApiAgentAddresses = activeAgentStatusAddresses(agentStatuses);
     const apiAgentAddresses = agentStatuses
       .map((status) => status.agent)
       .filter(isHexAddress);
@@ -1522,25 +1515,17 @@ export default function App() {
       daioData.reviewParticipants,
       chainSnapshots.map((snapshot) => snapshot.address),
     ]);
-    const selectedAgentAddresses = chainSelectedAgentAddresses.length > 0
-      ? chainSelectedAgentAddresses
-      : activeApiAgentAddresses;
+    const selectedAgentAddresses = chainSelectedAgentAddresses;
     const selectedAgentAddressSet = new Set(selectedAgentAddresses.map((address) => address.toLowerCase()));
     const fallbackAgentAddresses = registeredReviewerAddresses.length > 0
       ? registeredReviewerAddresses
       : apiAgentAddresses;
-    const fallbackSelectedCount = requestStatus >= 2
-      ? Math.min(currentCharacters.length, CONTRACT_EXPECTED_REVIEWER_COUNT)
-      : 0;
     const profileForCharacter = (index: number, agentAddress: `0x${string}` | undefined) => (
       (agentAddress ? profileByAddress.get(agentAddress.toLowerCase()) : undefined) ??
       registeredReviewerProfiles[index]
     );
     let lockedSelectedIds = selectedCharacterIdsByRequestRef.current[activeAgentStatusRequestId] ?? [];
     if (lockedSelectedIds.length === 0 && requestStatus >= 2) {
-      const currentSelectedIds = currentCharacters
-        .filter((character) => character.selected)
-        .map((character) => character.id);
       const registrySelectedIds = selectedAgentAddresses
         .map((address) => {
           const rosterIndex = registeredReviewerAddresses.findIndex(
@@ -1549,11 +1534,9 @@ export default function App() {
           return rosterIndex >= 0 ? currentCharacters[rosterIndex]?.id : undefined;
         })
         .filter((id): id is string => Boolean(id));
-      const initialSelectedIds = currentSelectedIds.length >= CONTRACT_EXPECTED_REVIEWER_COUNT
-        ? currentSelectedIds
-        : registrySelectedIds.length >= CONTRACT_EXPECTED_REVIEWER_COUNT
-          ? registrySelectedIds
-          : currentCharacters.slice(0, fallbackSelectedCount).map((character) => character.id);
+      const initialSelectedIds = registrySelectedIds.length >= CONTRACT_EXPECTED_REVIEWER_COUNT
+        ? registrySelectedIds
+        : [];
 
       lockedSelectedIds = initialSelectedIds.slice(0, CONTRACT_EXPECTED_REVIEWER_COUNT);
       selectedCharacterIdsByRequestRef.current = {
@@ -1889,6 +1872,16 @@ export default function App() {
   };
 
   const completeNodeSelection = useCallback(() => {
+    const selectedCount = getSelectedReviewNodes(charactersRef.current).length;
+    if (isContractDrivenReview && selectedCount < DEFAULT_SELECTED_NODE_COUNT) {
+      logReview('selection:waiting_for_chain_reviewers', {
+        requestId: activeAgentStatusRequestId,
+        selectedCount,
+        requiredCount: DEFAULT_SELECTED_NODE_COUNT,
+      });
+      return;
+    }
+
     setIsNodeSelectionReady(true);
 
     if (selectionCompletionLoggedRef.current) return;
@@ -1903,14 +1896,21 @@ export default function App() {
       selectedNames,
     });
     addLog(`${DEFAULT_SELECTED_NODE_COUNT} review nodes selected${selectedNames ? `: ${selectedNames}` : ''}.`);
-  }, [addLog]);
+  }, [activeAgentStatusRequestId, addLog, isContractDrivenReview]);
 
   useEffect(() => {
     if (phase !== 'SELECTION' || isNodeSelectionReady) return undefined;
+    if (isContractDrivenReview && selectedReviewCharacterCount < DEFAULT_SELECTED_NODE_COUNT) return undefined;
 
     const timer = window.setTimeout(completeNodeSelection, NODE_SELECTION_DRAW_MS);
     return () => window.clearTimeout(timer);
-  }, [completeNodeSelection, isNodeSelectionReady, phase]);
+  }, [
+    completeNodeSelection,
+    isContractDrivenReview,
+    isNodeSelectionReady,
+    phase,
+    selectedReviewCharacterCount,
+  ]);
 
   const queueRoundOneFromSelection = useCallback((source: 'local' | 'chain') => {
     const participants = getReviewParticipants(charactersRef.current);
