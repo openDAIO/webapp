@@ -15,13 +15,13 @@ function phaseContext(phase: SimulationPhase, currentRound: number) {
     case 'ROUND_1':
       return 'Independent review';
     case 'ROUND_2':
-      return 'Local review during Round 2';
+      return 'Local review during Round 1';
     case 'ROUND_3':
-      return 'Local review during Round 3';
+      return 'Local review during Round 2';
     case 'FINALIZING':
       return 'Final reconciliation';
     default:
-      return `Round ${currentRound} local review`;
+      return `Round ${Math.max(0, currentRound - 1)} local review`;
   }
 }
 

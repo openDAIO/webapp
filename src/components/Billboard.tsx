@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, CircleAlert } from 'lucide-react';
 import { AICharacter, FinalEvaluationSummary, NodeEvaluationResult, ReviewRoundState, SimulationPhase } from '../types';
 import { ASSET_PATHS } from '../assets/assetPaths';
 import { AUDIT_VRF_PROBABILITY, REVIEW_VRF_PROBABILITY, REVIEWER_COUNT } from '../utils/reviewScoring';
+import { displayRoundNumber } from '../constants/reviewFlowTiming';
 import StandardDeviationChart from './StandardDeviationChart';
 import NodeResultsTable from './NodeResultsTable';
 import RoundProgressStepper from './RoundProgressStepper';
@@ -55,29 +56,29 @@ function titleForPhase(phase?: SimulationPhase, currentRound = 1) {
       return 'Selection';
     case 'MOVING_TO_ROOMS':
     case 'ROUND_1':
-      return 'Round 01';
+      return `Round ${displayRoundNumber(1)}`;
     case 'ROUND_2_STARTING':
     case 'ROUND_2':
-      return 'Round 02';
+      return `Round ${displayRoundNumber(2)}`;
     case 'ROUND_3_STARTING':
     case 'ROUND_3':
-      return 'Round 03';
+      return `Round ${displayRoundNumber(3)}`;
     case 'FINALIZING':
       return 'Finalizing';
     case 'EVALUATED':
       return 'Final Result';
     default:
-      return `Round ${String(currentRound).padStart(2, '0')}`;
+      return `Round ${displayRoundNumber(currentRound)}`;
   }
 }
 
 function titleForDisplayKey(displayKey: number | 'final', isFinal: boolean) {
   if (isFinal || displayKey === 'final') return 'Final Result';
-  return `Round ${String(displayKey).padStart(2, '0')}`;
+  return `Round ${displayRoundNumber(displayKey)}`;
 }
 
 function resultKeyLabel(value: number | 'final') {
-  return value === 'final' ? 'FINAL' : `ROUND ${String(value).padStart(2, '0')}`;
+  return value === 'final' ? 'FINAL' : `ROUND ${displayRoundNumber(value)}`;
 }
 
 function contractScoreToChart(value?: number) {

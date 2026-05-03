@@ -389,7 +389,7 @@ function thoughtFlowItems(state: ReviewRoundState, reviewer: ReviewerNode) {
   if (state.phase === 'selection') {
     return [
       { title: 'Selection locked', body: 'Chosen by the VRF-style selection stage and reserved for all review rounds.' },
-      { title: 'Ready state', body: 'Proposal score, audit duties, and reputation weighting are prepared before Round 1 starts.' },
+      { title: 'Ready state', body: 'Proposal score, audit duties, and reputation weighting are prepared before Round 0 starts.' },
     ];
   }
 
@@ -397,7 +397,7 @@ function thoughtFlowItems(state: ReviewRoundState, reviewer: ReviewerNode) {
     return [
       { title: 'Individual Review', body: 'Reads the submission alone and separates evidence quality from presentation polish.' },
       { title: 'Proposal score', body: `Submits ${formatScore(reviewer.proposalScore)} with equal reviewerWeight 10,000.` },
-      { title: 'Median anchor', body: 'Round 1 consensus uses the median of the three independent proposal scores.' },
+      { title: 'Median anchor', body: 'Round 0 consensus uses the median of the three independent proposal scores.' },
     ];
   }
 
@@ -413,7 +413,7 @@ function thoughtFlowItems(state: ReviewRoundState, reviewer: ReviewerNode) {
   return [
     { title: 'Reputation Weighted', body: 'Returns to a private seat and applies long-term reputation to the audit-based weight.' },
     { title: 'Reputation sample', body: `Reputation score is ${formatScore(reviewer.round2?.reputationScore)} from sample count ${reviewer.reputation?.sampleCount ?? '--'}.` },
-    { title: 'Final weight', body: `Round 2 weight ${formatScore(reviewer.round2?.round1Weight)} becomes finalWeight ${formatScore(reviewer.round2?.finalWeight)}.` },
+    { title: 'Final weight', body: `Round 1 weight ${formatScore(reviewer.round2?.round1Weight)} becomes finalWeight ${formatScore(reviewer.round2?.finalWeight)}.` },
     { title: 'Final contribution', body: `Weighted score is ${formatScore(reviewer.round2?.weightedScore)} before weighted median consensus.` },
   ];
 }

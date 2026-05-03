@@ -15,9 +15,9 @@ const evidenceSets = [
 ];
 
 const roundTitles = {
-  1: 'Round 1 — Independent Review',
-  2: 'Round 2 — Cross-lab Discussion',
-  3: 'Round 3 — Hallway Discussion',
+  1: 'Round 0 — Independent Review',
+  2: 'Round 1 — Cross-lab Discussion',
+  3: 'Round 2 — Hallway Discussion',
 };
 
 function buildHistory(

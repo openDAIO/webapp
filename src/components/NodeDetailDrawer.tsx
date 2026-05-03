@@ -344,10 +344,10 @@ function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluati
           </div>
           <div className="node-report-metric-grid">
             <Info label="proposalScore" value={formatProtocolScore(reviewNode.proposalScore)} />
-            <Info label="Round 1 weight" value={formatProtocolScore(reviewNode.round0?.reviewerWeight)} />
+            <Info label="Round 0 weight" value={formatProtocolScore(reviewNode.round0?.reviewerWeight)} />
             <Info label="Audit median" value={formatProtocolScore(reviewNode.round1?.auditScore)} />
             <Info label="Audit reliability" value={formatProtocolScore(reviewNode.round1?.reliability)} />
-            <Info label="Round 2 weight" value={formatProtocolScore(reviewNode.round1?.reviewerWeight)} />
+            <Info label="Round 1 weight" value={formatProtocolScore(reviewNode.round1?.reviewerWeight)} />
             <Info label="Reputation" value={formatProtocolScore(reviewNode.round2?.reputationScore)} />
             <Info label="Final weight" value={formatProtocolScore(reviewNode.round2?.finalWeight)} />
             <Info label="Weighted score" value={formatProtocolScore(reviewNode.round2?.weightedScore)} />
@@ -367,9 +367,9 @@ function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluati
             <span>Summary only</span>
           </div>
           <div className="node-report-metric-grid">
-            <Info label="Round 1" value={`Individual Review · ${formatProtocolScore(reviewNode.proposalScore)}`} />
-            <Info label="Round 2" value={`Peer Audit · ${formatProtocolScore(reviewNode.round1?.reviewerWeight)}`} />
-            <Info label="Round 3" value={`Reputation Weighted · ${formatProtocolScore(reviewNode.round2?.finalWeight)}`} />
+            <Info label="Round 0" value={`Individual Review · ${formatProtocolScore(reviewNode.proposalScore)}`} />
+            <Info label="Round 1" value={`Peer Audit · ${formatProtocolScore(reviewNode.round1?.reviewerWeight)}`} />
+            <Info label="Round 2" value={`Reputation Weighted · ${formatProtocolScore(reviewNode.round2?.finalWeight)}`} />
           </div>
           <p className="node-report-narrative node-report-narrative--plain mt-3">
             The reviewer moved from an independent proposal score, to peer-audit weighting, then to reputation-adjusted final contribution.

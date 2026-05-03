@@ -85,9 +85,9 @@ export default function ContractStatePanel({ daioData, requestId, releasedRounds
         )}
 
         <div className="space-y-1">
-          <RoundRow label="Round 1" detail="Review" round={daioData.roundAggregates.review} released={reviewReleased} />
-          <RoundRow label="Round 2" detail="Audit" round={daioData.roundAggregates.auditConsensus} released={auditReleased} />
-          <RoundRow label="Round 3" detail="Final" round={daioData.roundAggregates.reputationFinal} released={finalReleased} />
+          <RoundRow label="Round 0" detail="Review" round={daioData.roundAggregates.review} released={reviewReleased} />
+          <RoundRow label="Round 1" detail="Audit" round={daioData.roundAggregates.auditConsensus} released={auditReleased} />
+          <RoundRow label="Round 2" detail="Final" round={daioData.roundAggregates.reputationFinal} released={finalReleased} />
         </div>
 
         <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">

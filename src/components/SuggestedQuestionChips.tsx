@@ -10,7 +10,7 @@ const baseQuestions = [
   'Why did you give this score?',
   'Which evidence mattered most?',
   'What changed your mind?',
-  'Why did your score change after Round 2?',
+  'Why did your score change after Round 1?',
 ];
 
 const slashedQuestions = [

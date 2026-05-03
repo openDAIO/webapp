@@ -76,8 +76,8 @@ function buildMockNodeResponse(node: NodeEvaluationResult, rawQuestion: string) 
 
   if (question.includes('round 2') || question.includes('after round 2')) {
     return round2
-      ? `After Round 2, my score moved from ${round2.scoreBefore ?? 'the prior score'} to ${round2.scoreAfter}. ${round2.discussionSummary ?? 'The cross-lab discussion changed how I read the evidence.'} ${round2.reasoning}`
-      : 'I do not have a recorded Round 2 discussion for this result.';
+      ? `After Round 1, my score moved from ${round2.scoreBefore ?? 'the prior score'} to ${round2.scoreAfter}. ${round2.discussionSummary ?? 'The cross-lab discussion changed how I read the evidence.'} ${round2.reasoning}`
+      : 'I do not have a recorded Round 1 discussion for this result.';
   }
 
   if (question.includes('changed your mind') || question.includes('score change')) {

@@ -7,9 +7,9 @@ interface RoundProgressStepperProps {
 
 const steps: Array<{ phase: ReviewGamePhase; label: string }> = [
   { phase: 'selection', label: 'Selection' },
-  { phase: 'round1', label: 'Round 1' },
-  { phase: 'round2', label: 'Round 2' },
-  { phase: 'round3', label: 'Round 3' },
+  { phase: 'round1', label: 'Round 0' },
+  { phase: 'round2', label: 'Round 1' },
+  { phase: 'round3', label: 'Round 2' },
   { phase: 'final', label: 'Final' },
 ];
 

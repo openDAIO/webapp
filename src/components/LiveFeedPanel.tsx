@@ -7,7 +7,7 @@ const DEFAULT_EVENTS = [
   'Brief Bea was slashed in Paper Review Lab.',
   'Evaluation finished in Judgment Room.',
   'Moat Miles started reviewing.',
-  'Round 2 has started in Investment Room.',
+  'Round 1 has started in Investment Room.',
   'Method Max raised a credibility challenge.',
   'Reward pool redistributed to eligible reviewers.',
 ];
