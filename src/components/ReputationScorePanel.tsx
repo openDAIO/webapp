@@ -1,4 +1,5 @@
 
+import { useMemo } from 'react';
 import { AICharacter } from '../types';
 import { motion } from 'motion/react';
 import { PixelFrameChrome } from './PixelFrame';
@@ -11,17 +12,37 @@ interface ReputationScorePanelProps {
 }
 
 export default function ReputationScorePanel({ characters, selectedIds = [], dimInactive = false }: ReputationScorePanelProps) {
-  const selectedIdSet = new Set(selectedIds);
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const shouldPartition = dimInactive && selectedIdSet.size > 0;
-  const sorted = [...characters].sort((a, b) => {
-    if (shouldPartition) {
-      const aSelected = selectedIdSet.has(a.id);
-      const bSelected = selectedIdSet.has(b.id);
-      if (aSelected !== bSelected) return aSelected ? -1 : 1;
-    }
+  const characterIdsKey = characters.map((c) => c.id).join(',');
+  const selectedIdsKey = [...selectedIdSet].sort().join(',');
 
-    return b.reputationScore - a.reputationScore;
-  });
+  // Order is captured when the character set changes, when partition flips,
+  // or when the selection set changes. Reputation score updates do NOT
+  // trigger a re-sort, so the panel stays stable while values flicker
+  // during the selection animation.
+  const orderedIds = useMemo(() => {
+    return [...characters]
+      .sort((a, b) => {
+        if (shouldPartition) {
+          const aSelected = selectedIdSet.has(a.id);
+          const bSelected = selectedIdSet.has(b.id);
+          if (aSelected !== bSelected) return aSelected ? -1 : 1;
+        }
+        return b.reputationScore - a.reputationScore;
+      })
+      .map((c) => c.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characterIdsKey, shouldPartition, selectedIdsKey]);
+
+  const characterById = useMemo(
+    () => new Map(characters.map((c) => [c.id, c])),
+    [characters],
+  );
+
+  const sorted = orderedIds
+    .map((id) => characterById.get(id))
+    .filter((c): c is AICharacter => Boolean(c));
 
   return (
     <div className="pixel-box warm-panel w-full">
