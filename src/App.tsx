@@ -2674,7 +2674,6 @@ export default function App() {
                   <NodeSelectionScene
                     nodes={characters}
                     isComplete={isNodeSelectionReady}
-                    onSkip={completeNodeSelection}
                     onStartReview={startSelectedReview}
                     onInspectNode={inspectReviewer}
                   />

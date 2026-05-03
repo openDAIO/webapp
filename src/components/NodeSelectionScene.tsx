@@ -1,4 +1,4 @@
-import { FastForward, Play } from 'lucide-react';
+import { Play } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { AICharacter } from '../types';
 import NodeBottle from './NodeBottle';
@@ -8,7 +8,6 @@ import SelectionStatusBar from './SelectionStatusBar';
 interface NodeSelectionSceneProps {
   nodes: AICharacter[];
   isComplete: boolean;
-  onSkip: () => void;
   onStartReview: () => void;
   onInspectNode?: (nodeId: string) => void;
 }
@@ -16,7 +15,6 @@ interface NodeSelectionSceneProps {
 export default function NodeSelectionScene({
   nodes,
   isComplete,
-  onSkip,
   onStartReview,
   onInspectNode,
 }: NodeSelectionSceneProps) {
@@ -57,31 +55,8 @@ export default function NodeSelectionScene({
         </motion.div>
       )}
 
-      <div className={`pointer-events-auto absolute left-1/2 z-[96] flex -translate-x-1/2 items-center justify-center gap-3 ${
-        isComplete ? 'top-[14.25rem]' : 'bottom-8'
-      }`}>
-        {!isComplete ? (
-          <button
-            type="button"
-            onClick={onSkip}
-            className="node-selection-button node-selection-button--secondary relative isolate flex h-12 min-w-28 items-center justify-center gap-2 border-0 bg-transparent px-4 text-sm font-bold uppercase tracking-wider text-[#17384b] transition-transform hover:-translate-y-0.5 active:translate-y-0.5"
-          >
-            <PixelFrameChrome
-              round={2}
-              thickness={4}
-              color="#2f5d7e"
-              fillColor="#edf5fa"
-              innerHighlightColor="rgba(255, 255, 255, 0.42)"
-              outerShadowColor="rgba(7, 17, 31, 0.24)"
-              outerShadowOffsetX={4}
-              outerShadowOffsetY={4}
-            />
-            <span className="relative z-40 flex items-center gap-2">
-              <FastForward size={16} />
-              Skip
-            </span>
-          </button>
-        ) : (
+      {isComplete && (
+        <div className="pointer-events-auto absolute left-1/2 top-[14.25rem] z-[96] flex -translate-x-1/2 items-center justify-center gap-3">
           <button
             type="button"
             onClick={onStartReview}
@@ -102,8 +77,8 @@ export default function NodeSelectionScene({
               Start Review
             </span>
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </motion.section>
   );
 }
