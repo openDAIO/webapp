@@ -1,12 +1,12 @@
 import { Coins, Medal, ShieldCheck, TrendingUp, Users } from 'lucide-react';
 import type { DaioData, DaioReviewerProfile } from '../services/daio/useDaioData';
+import { daioProfileReputationPercent } from '../utils/daioReputation';
 
 interface DashboardPageProps {
   daioData: DaioData;
 }
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const SCORE_SCALE = 10_000;
 
 function formatTokenAmount(value: bigint | undefined, decimals = 18, fractionDigits = 1) {
   if (!value || value === 0n) return '0';
@@ -38,19 +38,6 @@ function statusLabel(profile: DaioReviewerProfile) {
   return 'ERC-8004';
 }
 
-function reputationScore(profile: DaioReviewerProfile) {
-  const reputation = profile.reputation;
-  if (reputation.samples === 0n) return 0;
-
-  const sum =
-    Number(reputation.reportQuality) +
-    Number(reputation.auditReliability) +
-    Number(reputation.finalContribution) +
-    Number(reputation.protocolCompliance);
-
-  return (sum / 4 / SCORE_SCALE) * 100;
-}
-
 function profileName(profile: DaioReviewerProfile) {
   return profile.ensName ?? `agent-${profile.agentId.toString()}`;
 }
@@ -58,7 +45,7 @@ function profileName(profile: DaioReviewerProfile) {
 function buildRankingRows(profiles: DaioReviewerProfile[]) {
   return [...profiles]
     .sort((a, b) => {
-      const scoreDelta = reputationScore(b) - reputationScore(a);
+      const scoreDelta = daioProfileReputationPercent(b) - daioProfileReputationPercent(a);
       if (scoreDelta !== 0) return scoreDelta;
       const completedDelta = Number(b.completedRequests - a.completedRequests);
       if (completedDelta !== 0) return completedDelta;
@@ -67,8 +54,8 @@ function buildRankingRows(profiles: DaioReviewerProfile[]) {
     .map((profile) => ({
       key: profile.address,
       name: profileName(profile),
-      score: reputationScore(profile),
-      reputation: Number(profile.reputation.reportQuality) / 100,
+      score: daioProfileReputationPercent(profile),
+      samples: Number(profile.reputation.samples),
       stake: `${formatTokenAmount(profile.stake)} USDAIO`,
       ribbon: statusLabel(profile),
       agentId: profile.agentId.toString(),
@@ -84,7 +71,7 @@ export default function DashboardPage({ daioData }: DashboardPageProps) {
     (profile) => profile.erc8004AgentWallet && profile.erc8004AgentWallet !== ZERO_ADDRESS,
   );
   const averageReputation = sampledProfiles.length > 0
-    ? sampledProfiles.reduce((sum, profile) => sum + reputationScore(profile), 0) / sampledProfiles.length
+    ? sampledProfiles.reduce((sum, profile) => sum + daioProfileReputationPercent(profile), 0) / sampledProfiles.length
     : 0;
   const rankingRows = buildRankingRows(profiles);
   const hasRequest = daioData.latestRequestId > 0n;
@@ -198,9 +185,17 @@ export default function DashboardPage({ daioData }: DashboardPageProps) {
             <span className="dashboard-note__pin dashboard-note__pin--blue" />
             <div className="dashboard-note__title-row">
               <Medal size={21} />
-              <h3>Agent Reputation</h3>
+              <h3>Agent Leaderboard</h3>
             </div>
             <div className="dashboard-ranking-list">
+              <div className="dashboard-ranking-row dashboard-ranking-row--header" aria-hidden="true">
+                <span className="dashboard-ranking-row__rank">Rank</span>
+                <span className="dashboard-ranking-row__name">Agent</span>
+                <span className="dashboard-ranking-row__ribbon">Status</span>
+                <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--score">Reputation</span>
+                <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--reputation">Rounds</span>
+                <span className="dashboard-ranking-row__earnings">Stake</span>
+              </div>
               {rankingRows.length === 0 ? (
                 <div className="dashboard-ranking-row">
                   <span className="dashboard-ranking-row__rank">--</span>
@@ -215,8 +210,8 @@ export default function DashboardPage({ daioData }: DashboardPageProps) {
                   <span className="dashboard-ranking-row__rank">#{index + 1}</span>
                   <span className="dashboard-ranking-row__name">{node.name}</span>
                   <span className="dashboard-ranking-row__ribbon">{node.ribbon}</span>
-                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--score">{formatScore(node.score)}</span>
-                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--reputation">{node.reputation > 0 ? `${node.reputation.toFixed(0)}` : '--'}</span>
+                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--score">{node.score > 0 ? node.score.toFixed(1) : '--'}</span>
+                  <span className="dashboard-ranking-row__metric dashboard-ranking-row__metric--reputation">{node.samples > 0 ? node.samples : '--'}</span>
                   <span className="dashboard-ranking-row__earnings">{node.stake}</span>
                 </div>
               ))}

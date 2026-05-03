@@ -596,10 +596,6 @@
     text-shadow: none;
   }
 
-  .node-selection-button {
-    text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.45);
-  }
-
   .node-selection-controls--status {
     top: 6rem;
   }
@@ -2392,6 +2388,32 @@
     line-height: 1;
   }
 
+  .dashboard-ranking-row--header {
+    border: none;
+    background: transparent;
+    padding: 0.1rem 0.6rem 0.25rem;
+    color: #6b4a2a;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.78;
+  }
+
+  .dashboard-ranking-row--header .dashboard-ranking-row__rank,
+  .dashboard-ranking-row--header .dashboard-ranking-row__name,
+  .dashboard-ranking-row--header .dashboard-ranking-row__ribbon,
+  .dashboard-ranking-row--header .dashboard-ranking-row__metric,
+  .dashboard-ranking-row--header .dashboard-ranking-row__earnings {
+    border: none;
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
   .dashboard-ranking-row__rank {
     color: #b94d44;
     font-weight: 700;
@@ -2514,6 +2536,10 @@
         "rank earnings earnings";
       gap: 0.35rem 0.5rem;
       font-size: 0.98rem;
+    }
+
+    .dashboard-ranking-row--header {
+      display: none;
     }
 
     .dashboard-ranking-row__rank {
