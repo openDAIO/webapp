@@ -53,6 +53,7 @@ import {
   ROUND_INTRO_DURATION_MS,
   ROUND_MOVEMENT_SETTLE_MS,
   ROUND_RESULT_HOLD_MS,
+  ROUND_REVEAL_BUFFER_MS,
   ROUND_THREE_RESULT_HOLD_MS,
   roundProcessDurationMs,
 } from './constants/reviewFlowTiming';
@@ -1134,6 +1135,11 @@ export default function App() {
     2: false,
     3: false,
   });
+  const roundApplyTimerRefs = useRef<Record<1 | 2 | 3, number | null>>({
+    1: null,
+    2: null,
+    3: null,
+  });
   const finalizedContractRequestRef = useRef<string | null>(null);
 
   const selectedConversation = useMemo(
@@ -1152,6 +1158,13 @@ export default function App() {
   );
   const reviewParticipants = useMemo(() => getReviewParticipants(characters), [characters]);
   const selectedReviewCharacterCount = useMemo(() => getSelectedReviewNodes(characters).length, [characters]);
+  const releasedRounds = useMemo(() => {
+    const maxRound = characters.reduce((latest, character) => Math.max(
+      latest,
+      character.scoreHistory.reduce((max, entry) => Math.max(max, entry.round), 0),
+    ), 0);
+    return { 1: maxRound >= 1, 2: maxRound >= 2, 3: maxRound >= 3 } as const;
+  }, [characters]);
   const sceneCharacters = phase === 'IDLE' || phase === 'QUEUED' || phase === 'SELECTION' || phase === 'MOVING_TO_ROOMS' ? characters : reviewParticipants;
   const sideboardCharacters = characters;
   const selectedThinkingNode = useMemo(
@@ -1459,6 +1472,13 @@ export default function App() {
     if (lastContractRequestIdRef.current !== activeAgentStatusRequestId) {
       lastContractRequestIdRef.current = activeAgentStatusRequestId;
       appliedContractRoundsRef.current = { 1: false, 2: false, 3: false };
+      ([1, 2, 3] as const).forEach((roundKey) => {
+        const timerId = roundApplyTimerRefs.current[roundKey];
+        if (timerId !== null) {
+          window.clearTimeout(timerId);
+          roundApplyTimerRefs.current[roundKey] = null;
+        }
+      });
       finalizedContractRequestRef.current = null;
       contractSelectionAnimatedRequestRef.current = null;
       contractMotionRoundsRef.current = {};
@@ -1475,6 +1495,13 @@ export default function App() {
       setPendingDiscussionAdvanceRound(null);
       setIsNodeSelectionReady(false);
       setVisibleChainAuditCount(0);
+      const cleanedCharacters = charactersRef.current.map(resetCharacter);
+      charactersRef.current = cleanedCharacters;
+      reviewRoundStateRef.current = null;
+      setCharacters(cleanedCharacters);
+      setReviewRoundState(null);
+      setFinalResult(null);
+      setShowChart(false);
       addLog(`Tracking on-chain request #${activeAgentStatusRequestId}. Waiting for contract state changes.`);
     }
 
@@ -1527,6 +1554,31 @@ export default function App() {
       finalizedContractRequestRef.current !== activeAgentStatusRequestId
     ) {
       nextPhase = 'FINALIZING';
+    }
+
+    const round1Applied = appliedContractRoundsRef.current[1];
+    const round2Applied = appliedContractRoundsRef.current[2];
+    const round3Applied = appliedContractRoundsRef.current[3];
+    const advancedPastRound1: SimulationPhase[] = ['ROUND_2_STARTING', 'ROUND_2', 'ROUND_3_STARTING', 'ROUND_3', 'FINALIZING', 'EVALUATED'];
+    const advancedPastRound2: SimulationPhase[] = ['ROUND_3_STARTING', 'ROUND_3', 'FINALIZING', 'EVALUATED'];
+    const advancedPastRound3: SimulationPhase[] = ['FINALIZING', 'EVALUATED'];
+
+    if (!round1Applied && advancedPastRound1.includes(nextPhase)) {
+      nextPhase = phase === 'ROUND_1' || phase === 'MOVING_TO_ROOMS' || phase === 'SELECTION' || phase === 'QUEUED'
+        ? phase
+        : 'ROUND_1';
+    }
+
+    if (round1Applied && !round2Applied && advancedPastRound2.includes(nextPhase)) {
+      nextPhase = phase === 'ROUND_2' || phase === 'ROUND_2_STARTING'
+        ? phase
+        : 'ROUND_2';
+    }
+
+    if (round2Applied && !round3Applied && advancedPastRound3.includes(nextPhase)) {
+      nextPhase = phase === 'ROUND_3' || phase === 'ROUND_3_STARTING'
+        ? phase
+        : 'ROUND_3';
     }
 
     if (!roomReviewBounty && daioData.requestLifecycle) {
@@ -2323,27 +2375,59 @@ export default function App() {
   useEffect(() => {
     if (!isContractDrivenReview || !activeAgentStatusRequestId) return;
 
-    if (daioData.roundAggregates.review.closed && !appliedContractRoundsRef.current[1]) {
-      appliedContractRoundsRef.current[1] = true;
-      applyRoundScores(1);
-      addLog(`Round 1 ledger snapshot closed at ${daioData.roundAggregates.review.score.toString()}/10000.`);
-    }
+    const scheduleRoundApply = (
+      roundKey: 1 | 2 | 3,
+      eligible: boolean,
+      run: () => void,
+    ) => {
+      const currentTimer = roundApplyTimerRefs.current[roundKey];
+      if (eligible && currentTimer === null && !appliedContractRoundsRef.current[roundKey]) {
+        roundApplyTimerRefs.current[roundKey] = window.setTimeout(() => {
+          roundApplyTimerRefs.current[roundKey] = null;
+          if (appliedContractRoundsRef.current[roundKey]) return;
+          appliedContractRoundsRef.current[roundKey] = true;
+          run();
+        }, ROUND_REVEAL_BUFFER_MS);
+      } else if (!eligible && currentTimer !== null) {
+        window.clearTimeout(currentTimer);
+        roundApplyTimerRefs.current[roundKey] = null;
+      }
+    };
 
-    if (daioData.roundAggregates.auditConsensus.closed && !appliedContractRoundsRef.current[2]) {
-      appliedContractRoundsRef.current[2] = true;
-      applyRoundScores(2);
-      addLog(`Round 2 audit consensus closed at ${daioData.roundAggregates.auditConsensus.score.toString()}/10000.`);
-    }
+    scheduleRoundApply(
+      1,
+      daioData.roundAggregates.review.closed && phase === 'ROUND_1',
+      () => {
+        applyRoundScores(1);
+        setRoundResultHoldRound(1);
+        addLog(`Round 1 ledger snapshot closed at ${daioData.roundAggregates.review.score.toString()}/10000.`);
+      },
+    );
 
-    if (daioData.roundAggregates.reputationFinal.closed && !appliedContractRoundsRef.current[3]) {
-      appliedContractRoundsRef.current[3] = true;
-      applyRoundScores(3);
-      addLog(`Round 3 reputation final closed at ${daioData.roundAggregates.reputationFinal.score.toString()}/10000.`);
-    }
+    scheduleRoundApply(
+      2,
+      daioData.roundAggregates.auditConsensus.closed && phase === 'ROUND_2' && auditQuorumDisplayReady,
+      () => {
+        applyRoundScores(2);
+        setRoundResultHoldRound(2);
+        addLog(`Round 2 audit consensus closed at ${daioData.roundAggregates.auditConsensus.score.toString()}/10000.`);
+      },
+    );
+
+    scheduleRoundApply(
+      3,
+      daioData.roundAggregates.reputationFinal.closed && phase === 'ROUND_3',
+      () => {
+        applyRoundScores(3);
+        setRoundResultHoldRound(3);
+        addLog(`Round 3 reputation final closed at ${daioData.roundAggregates.reputationFinal.score.toString()}/10000.`);
+      },
+    );
   }, [
     activeAgentStatusRequestId,
     addLog,
     applyRoundScores,
+    auditQuorumDisplayReady,
     daioData.roundAggregates.auditConsensus.closed,
     daioData.roundAggregates.auditConsensus.score,
     daioData.roundAggregates.reputationFinal.closed,
@@ -2351,6 +2435,7 @@ export default function App() {
     daioData.roundAggregates.review.closed,
     daioData.roundAggregates.review.score,
     isContractDrivenReview,
+    phase,
   ]);
 
   useEffect(() => {
@@ -2358,6 +2443,7 @@ export default function App() {
     if (!daioData.roundAggregates.reputationFinal.closed) return;
     if (!auditQuorumDisplayReady) return;
     if (finalizedContractRequestRef.current === activeAgentStatusRequestId) return;
+    if (!appliedContractRoundsRef.current[2]) return;
 
     const round3MotionKey = `${activeAgentStatusRequestId}:3`;
     if (!contractMotionRoundsRef.current[round3MotionKey]) {
@@ -2369,6 +2455,8 @@ export default function App() {
       return;
     }
 
+    if (!appliedContractRoundsRef.current[3]) return;
+    if (roundResultHoldRound === 3) return;
     if (phase !== 'ROUND_3' && phase !== 'FINALIZING') return;
 
     finalizedContractRequestRef.current = activeAgentStatusRequestId;
@@ -2387,6 +2475,7 @@ export default function App() {
     isContractDrivenReview,
     phase,
     roundProcessStartDelayMs,
+    roundResultHoldRound,
   ]);
 
   const inspectReviewer = (reviewerId: string) => {
@@ -2814,6 +2903,7 @@ export default function App() {
                 phase={phase}
                 currentRound={currentRound}
                 reviewRoundState={activeReviewRoundState}
+                roundResultHoldRound={roundResultHoldRound}
               />
 
               <AnimatePresence>
@@ -2915,7 +3005,7 @@ export default function App() {
                               }}
                             >
                               {tokenFlow > 0 ? '+' : ''}
-                              {tokenFlow.toFixed(1)} TOK
+                              {tokenFlow.toFixed(1)} {result.rewardSource === 'chain' ? 'USDAIO' : 'TOK'}
                             </div>
                           )}
                         </div>
@@ -3057,7 +3147,7 @@ export default function App() {
                     className="flex min-h-0 flex-1 flex-col gap-4"
                   >
                     {isContractDrivenReview && (
-                      <ContractStatePanel daioData={daioData} requestId={activeAgentStatusRequestId} />
+                      <ContractStatePanel daioData={daioData} requestId={activeAgentStatusRequestId} releasedRounds={releasedRounds} />
                     )}
                     {showAuditQuorumTracker && activeReviewRoundState && (
                       <AuditQuorumTracker

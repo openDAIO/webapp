@@ -21,6 +21,7 @@ interface BillboardProps {
   phase?: SimulationPhase;
   currentRound?: number;
   reviewRoundState?: ReviewRoundState | null;
+  roundResultHoldRound?: 1 | 2 | 3 | null;
   action?: ReactNode;
 }
 
@@ -70,6 +71,11 @@ function titleForPhase(phase?: SimulationPhase, currentRound = 1) {
   }
 }
 
+function titleForDisplayKey(displayKey: number | 'final', isFinal: boolean) {
+  if (isFinal || displayKey === 'final') return 'Final Result';
+  return `Round ${String(displayKey).padStart(2, '0')}`;
+}
+
 function resultKeyLabel(value: number | 'final') {
   return value === 'final' ? 'FINAL' : `ROUND ${String(value).padStart(2, '0')}`;
 }
@@ -99,6 +105,7 @@ export default function Billboard({
   phase,
   currentRound,
   reviewRoundState,
+  roundResultHoldRound,
   action,
 }: BillboardProps) {
   const isFinal = Boolean(finalSummary);
@@ -115,37 +122,46 @@ export default function Billboard({
     return Math.max(latest, characterLatest);
   }, 0);
   const activeRound = activeRoundFromPhase(phase, currentRound);
-  const latestResultKey: number | 'final' = isFinal ? 'final' : latestResultRound;
   const resultKeys = [
     ...Array.from({ length: latestResultRound }, (_, index) => index + 1)
       .filter((round) => !(isFinal && round === 3)),
     ...(isFinal ? (['final'] as const) : []),
   ];
-  const [selectedResultKey, setSelectedResultKey] = useState<number | 'final'>(latestResultKey || 1);
+  const naturalDisplayKey: number | 'final' = isFinal
+    ? 'final'
+    : roundResultHoldRound ?? activeRound;
+  const [selectedResultKey, setSelectedResultKey] = useState<number | 'final'>(naturalDisplayKey);
   const [highlightConsensus, setHighlightConsensus] = useState(false);
   const isFinalizing = phase === 'FINALIZING';
-  const isRoundInProgress = !isFinal && !isSelection && (activeRound > latestResultRound || isFinalizing);
-  const shouldShowEmptyActiveRound = !isFinal && !isSelection && latestResultRound === 0;
-  const displayResultKey = shouldShowEmptyActiveRound
-    ? activeRound
+  const displayResultKey: number | 'final' = isFinal
+    ? 'final'
     : resultKeys.includes(selectedResultKey)
       ? selectedResultKey
-      : latestResultKey || activeRound;
+      : naturalDisplayKey;
   const selectedResultIndex = resultKeys.findIndex((key) => key === displayResultKey);
   const canBrowseResults = resultKeys.length > 1;
   const progressPhase: ReviewRoundState['phase'] = reviewRoundState?.phase ?? (isFinal ? 'final' : isSelection ? 'selection' : activeRound === 2 ? 'round2' : activeRound === 3 ? 'round3' : 'round1');
-  const consensusValue = displayResultKey === 'final'
-    ? finalSummary?.finalAverage
-    : displayResultKey === 1
-      ? contractScoreToChart(reviewRoundState?.round0ConsensusScore)
-      : displayResultKey === 2
-        ? contractScoreToChart(reviewRoundState?.round1ConsensusScore)
-        : contractScoreToChart(reviewRoundState?.round2ConsensusScore);
-  const scoreOverrideById = reviewRoundState?.reviewers.reduce<Record<string, number>>((scores, reviewer) => {
-    const score = reviewerScoreForResultKey(reviewer, displayResultKey);
-    if (typeof score === 'number') scores[reviewer.id] = score;
-    return scores;
-  }, {});
+  const isDisplayRoundClosed =
+    isFinal ||
+    displayResultKey === 'final' ||
+    (typeof displayResultKey === 'number' && displayResultKey <= latestResultRound);
+  const isRoundInProgress = !isFinal && !isSelection && (!isDisplayRoundClosed || isFinalizing);
+  const consensusValue = !isDisplayRoundClosed
+    ? undefined
+    : displayResultKey === 'final'
+      ? finalSummary?.finalAverage
+      : displayResultKey === 1
+        ? contractScoreToChart(reviewRoundState?.round0ConsensusScore)
+        : displayResultKey === 2
+          ? contractScoreToChart(reviewRoundState?.round1ConsensusScore)
+          : contractScoreToChart(reviewRoundState?.round2ConsensusScore);
+  const scoreOverrideById = isDisplayRoundClosed
+    ? reviewRoundState?.reviewers.reduce<Record<string, number>>((scores, reviewer) => {
+        const score = reviewerScoreForResultKey(reviewer, displayResultKey);
+        if (typeof score === 'number') scores[reviewer.id] = score;
+        return scores;
+      }, {})
+    : undefined;
 
   useEffect(() => {
     if (!showNodeResults) return undefined;
@@ -169,12 +185,14 @@ export default function Billboard({
   }, [isFinal]);
 
   useEffect(() => {
-    if (!latestResultKey) return;
-    setSelectedResultKey(latestResultKey);
-    setHighlightConsensus(true);
-    const timer = window.setTimeout(() => setHighlightConsensus(false), 1200);
-    return () => window.clearTimeout(timer);
-  }, [latestResultKey]);
+    setSelectedResultKey(naturalDisplayKey);
+    if (isDisplayRoundClosed) {
+      setHighlightConsensus(true);
+      const timer = window.setTimeout(() => setHighlightConsensus(false), 1200);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [naturalDisplayKey, isDisplayRoundClosed]);
 
   const showPreviousResult = () => {
     if (!canBrowseResults) return;
@@ -272,10 +290,12 @@ export default function Billboard({
               >
                 {isFinal ? (
                   'Final Result'
+                ) : isSelection || phase === 'QUEUED' ? (
+                  titleForPhase(phase, activeRound)
                 ) : (
                   <>
-                    {titleForPhase(phase, activeRound)}
-                    {!isSelection && (
+                    {titleForDisplayKey(displayResultKey, isFinal)}
+                    {!isDisplayRoundClosed && (
                       <span className="scoreboard-loading-dots" aria-hidden="true">
                         <span>.</span>
                         <span>.</span>

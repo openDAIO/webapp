@@ -5,6 +5,7 @@ import { PixelFrameChrome } from './PixelFrame';
 interface ContractStatePanelProps {
   daioData: DaioData;
   requestId?: string | null;
+  releasedRounds?: { 1: boolean; 2: boolean; 3: boolean };
 }
 
 function formatScore(value: bigint) {
@@ -15,12 +16,14 @@ function RoundRow({
   label,
   detail,
   round,
+  released,
 }: {
   label: string;
   detail: string;
   round: DaioRoundAggregate;
+  released: boolean;
 }) {
-  const status = round.closed ? (round.aborted ? 'aborted' : 'closed') : 'open';
+  const status = !released ? 'open' : round.aborted ? 'aborted' : 'closed';
   return (
     <div className="grid grid-cols-[5.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 border border-[#d7b98f] bg-[#fffef3] px-2 py-1.5">
       <span className="text-[9px] font-bold uppercase tracking-wider text-[#6b563f]">
@@ -28,10 +31,10 @@ function RoundRow({
         <span className="block text-[7px] text-[#8c745b]">{detail}</span>
       </span>
       <span className="min-w-0 font-mono text-[10px] font-bold text-[#2f5d7e]">
-        score {formatScore(round.score)}
+        score {released ? formatScore(round.score) : '--'}
       </span>
       <span className={`text-right text-[9px] font-bold uppercase ${
-        round.closed ? 'text-[#2f6f35]' : 'text-[#9c6a2e]'
+        released ? 'text-[#2f6f35]' : 'text-[#9c6a2e]'
       }`}>
         {status}
       </span>
@@ -39,7 +42,7 @@ function RoundRow({
   );
 }
 
-export default function ContractStatePanel({ daioData, requestId }: ContractStatePanelProps) {
+export default function ContractStatePanel({ daioData, requestId, releasedRounds }: ContractStatePanelProps) {
   if (!requestId || daioData.latestRequestId <= 0n) return null;
 
   const lifecycle = daioData.requestLifecycle;
@@ -48,9 +51,9 @@ export default function ContractStatePanel({ daioData, requestId }: ContractStat
     : '--';
   const auditReportQuorum = Math.max(AUDIT_QUORUM, Number(daioData.requestConfig?.auditRevealQuorum ?? 0n));
   const auditReportProgress = `${Math.min(daioData.auditReportCount, auditReportQuorum)}/${auditReportQuorum}`;
-  const reviewReady = daioData.roundAggregates.review.closed;
-  const auditReady = daioData.roundAggregates.auditConsensus.closed;
-  const finalReady = daioData.roundAggregates.reputationFinal.closed;
+  const reviewReleased = releasedRounds?.[1] ?? daioData.roundAggregates.review.closed;
+  const auditReleased = releasedRounds?.[2] ?? daioData.roundAggregates.auditConsensus.closed;
+  const finalReleased = releasedRounds?.[3] ?? daioData.roundAggregates.reputationFinal.closed;
 
   return (
     <section className="pixel-box warm-panel relative p-3 text-[#503521]">
@@ -82,15 +85,15 @@ export default function ContractStatePanel({ daioData, requestId }: ContractStat
         )}
 
         <div className="space-y-1">
-          <RoundRow label="Round 1" detail="Review" round={daioData.roundAggregates.review} />
-          <RoundRow label="Round 2" detail="Audit" round={daioData.roundAggregates.auditConsensus} />
-          <RoundRow label="Round 3" detail="Final" round={daioData.roundAggregates.reputationFinal} />
+          <RoundRow label="Round 1" detail="Review" round={daioData.roundAggregates.review} released={reviewReleased} />
+          <RoundRow label="Round 2" detail="Audit" round={daioData.roundAggregates.auditConsensus} released={auditReleased} />
+          <RoundRow label="Round 3" detail="Final" round={daioData.roundAggregates.reputationFinal} released={finalReleased} />
         </div>
 
         <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">
-          <Pill active={reviewReady}>Review</Pill>
-          <Pill active={auditReady}>Audit</Pill>
-          <Pill active={finalReady}>Final</Pill>
+          <Pill active={reviewReleased}>Review</Pill>
+          <Pill active={auditReleased}>Audit</Pill>
+          <Pill active={finalReleased}>Final</Pill>
         </div>
       </div>
     </section>
