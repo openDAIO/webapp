@@ -32,6 +32,7 @@ export default function ReputationScorePanel({ characters, selectedIds = [], dim
       <div className="space-y-3">
         {sorted.map((char) => {
           const inactive = shouldPartition && !selectedIdSet.has(char.id);
+          const reputationLabel = char.reputationScore > 0 ? `${char.reputationScore.toFixed(1)}%` : '--';
 
           return (
           <div
@@ -54,7 +55,7 @@ export default function ReputationScorePanel({ characters, selectedIds = [], dim
             <div className="min-w-0 flex flex-col gap-1">
               <div className="flex items-end justify-between gap-2">
                 <span className="max-w-[120px] truncate text-[10px]">{char.name}</span>
-                <span className={`text-[10px] font-bold ${inactive ? 'text-[#8c745b]' : 'text-[#2f5d7e]'}`}>{char.reputationScore}</span>
+                <span className={`text-[10px] font-bold ${inactive ? 'text-[#8c745b]' : 'text-[#2f5d7e]'}`}>{reputationLabel}</span>
               </div>
               <div className="relative h-2 overflow-hidden border border-[#d7b98f] bg-[#ead9b1]">
                 <motion.div

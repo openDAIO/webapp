@@ -1,21 +1,17 @@
-import { Play } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { AICharacter } from '../types';
 import NodeBottle from './NodeBottle';
-import { PixelFrameChrome } from './PixelFrame';
 import SelectionStatusBar from './SelectionStatusBar';
 
 interface NodeSelectionSceneProps {
   nodes: AICharacter[];
   isComplete: boolean;
-  onStartReview: () => void;
   onInspectNode?: (nodeId: string) => void;
 }
 
 export default function NodeSelectionScene({
   nodes,
   isComplete,
-  onStartReview,
   onInspectNode,
 }: NodeSelectionSceneProps) {
   return (
@@ -53,31 +49,6 @@ export default function NodeSelectionScene({
         >
           Click a reviewer for details
         </motion.div>
-      )}
-
-      {isComplete && (
-        <div className="pointer-events-auto absolute left-1/2 top-[14.25rem] z-[96] flex -translate-x-1/2 items-center justify-center gap-3">
-          <button
-            type="button"
-            onClick={onStartReview}
-            className="node-selection-button relative isolate flex h-14 min-w-40 items-center justify-center gap-2 border-0 bg-transparent px-5 text-base font-bold uppercase tracking-wider text-[#23351f] transition-transform hover:-translate-y-0.5 active:translate-y-0.5"
-          >
-            <PixelFrameChrome
-              round={2}
-              thickness={4}
-              color="#5f4328"
-              fillColor="#e5b45f"
-              innerHighlightColor="rgba(255, 255, 255, 0.34)"
-              outerShadowColor="rgba(80, 53, 33, 0.28)"
-              outerShadowOffsetX={5}
-              outerShadowOffsetY={5}
-            />
-            <span className="relative z-40 flex items-center gap-2">
-              <Play size={17} />
-              Start Review
-            </span>
-          </button>
-        </div>
       )}
     </motion.section>
   );

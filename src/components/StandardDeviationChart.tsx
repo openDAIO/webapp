@@ -16,6 +16,8 @@ interface StandardDeviationChartProps {
   analysisRoundLabel?: string;
   highlightUpdate?: boolean;
   compact?: boolean;
+  consensusValue?: number;
+  scoreOverrideById?: Record<string, number>;
 }
 
 function getChartDomain(scores: number[]) {
@@ -50,9 +52,13 @@ export default function StandardDeviationChart({
   analysisRoundLabel,
   highlightUpdate = false,
   compact = false,
+  consensusValue,
+  scoreOverrideById,
 }: StandardDeviationChartProps) {
   const plottedScores = characters
     .map((character) => {
+      const scoreOverride = scoreOverrideById?.[character.id];
+      if (typeof scoreOverride === 'number' && Number.isFinite(scoreOverride)) return scoreOverride;
       if (typeof displayRound === 'number') {
         return character.scoreHistory.find((entry) => entry.round === displayRound)?.score;
       }
@@ -61,14 +67,21 @@ export default function StandardDeviationChart({
     .filter((score): score is number => typeof score === 'number' && Number.isFinite(score));
   const hasPlottedScores = plottedScores.length > 0;
   const hasScoreForDisplay = (character: AICharacter) => {
+    const scoreOverride = scoreOverrideById?.[character.id];
+    if (typeof scoreOverride === 'number' && Number.isFinite(scoreOverride)) return true;
     if (typeof displayRound === 'number') {
       return typeof character.scoreHistory.find((entry) => entry.round === displayRound)?.score === 'number';
     }
     return typeof character.lastScore === 'number';
   };
   const scores = hasPlottedScores ? plottedScores : [0];
-  const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+  const calculatedAverage = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+  const avg = typeof consensusValue === 'number' && Number.isFinite(consensusValue)
+    ? consensusValue
+    : calculatedAverage;
   const scoreFor = (character: AICharacter) => {
+    const scoreOverride = scoreOverrideById?.[character.id];
+    if (typeof scoreOverride === 'number' && Number.isFinite(scoreOverride)) return scoreOverride;
     if (typeof displayRound === 'number') {
       return character.scoreHistory.find((entry) => entry.round === displayRound)?.score ?? avg;
     }
@@ -92,7 +105,12 @@ export default function StandardDeviationChart({
   const chartMin = stickyDomain ? lockedDomain.min : targetDomain.min;
   const chartMax = stickyDomain ? lockedDomain.max : targetDomain.max;
   const chartRange = Math.max(1, chartMax - chartMin);
-  const positionFor = (score: number) => `${Math.min(100, Math.max(0, ((score - chartMin) / chartRange) * 100))}%`;
+  const positionPctFor = (score: number) => Math.min(100, Math.max(0, ((score - chartMin) / chartRange) * 100));
+  const positionFor = (score: number) => `${positionPctFor(score)}%`;
+  const insetPositionFor = (score: number, insetPx: number) => {
+    const pct = positionPctFor(score);
+    return `clamp(${insetPx}px, ${pct}%, calc(100% - ${insetPx}px))`;
+  };
   const scoreGroups = [...characters]
     .filter(hasScoreForDisplay)
     .sort((a, b) => scoreFor(a) - scoreFor(b))
@@ -113,7 +131,7 @@ export default function StandardDeviationChart({
     group.members.forEach((character, memberIndex) => {
       groupLayoutByCharacterId.set(character.id, {
         lane,
-        offset: (memberIndex - (group.members.length - 1) / 2) * 24,
+        offset: (memberIndex - (group.members.length - 1) / 2) * (compact ? 14 : 18),
       });
     });
   });
@@ -138,6 +156,8 @@ export default function StandardDeviationChart({
   const averageLineGap = scoreboard ? 0 : 5;
   const labelTextClass = scoreboard ? 'text-[#d9f7ff]' : 'text-[#263b48]';
   const mutedTextClass = scoreboard ? 'text-[#9eb6c3]' : 'text-[#2f5d7e]';
+  const formatChartScore = (score: number) => score.toFixed(2);
+  const consensusBoxLeft = insetPositionFor(avg, compact ? 64 : 96);
 
   return (
     <AnimatePresence>
@@ -180,18 +200,19 @@ export default function StandardDeviationChart({
               .map((character) => {
               const layout = groupLayoutByCharacterId.get(character.id) ?? { lane: 0, offset: 0 };
               const score = scoreFor(character);
+              const labelLeft = insetPositionFor(score, 24);
               const labelTop = labelTops[layout.lane];
               const connectorTop = labelTop + 18;
 
               return (
                 <div key={`${character.id}-label`}>
                   <motion.div
-                    initial={{ opacity: 0, y: -6, left: positionFor(score), top: labelTop, marginLeft: layout.offset }}
-                    animate={{ opacity: 1, y: 0, left: positionFor(score), top: labelTop, marginLeft: layout.offset }}
+                    initial={{ opacity: 0, y: -6, left: labelLeft, top: labelTop, marginLeft: layout.offset }}
+                    animate={{ opacity: 1, y: 0, left: labelLeft, top: labelTop, marginLeft: layout.offset }}
                     transition={{ type: 'spring', stiffness: 220, damping: 28 }}
                     className="absolute z-20 flex -translate-x-1/2 items-start justify-center"
                   >
-                    <div className="flex w-[32px] flex-col items-center">
+                    <div className="flex w-[38px] flex-col items-center">
                       <img
                         src={faceIconPath(character)}
                         alt={character.name}
@@ -204,7 +225,7 @@ export default function StandardDeviationChart({
                           }
                         }}
                       />
-                      <span className={`mt-0.5 w-[44px] truncate text-center text-[7px] uppercase leading-none tracking-wider ${labelTextClass}`}>
+                      <span className={`mt-0.5 w-[50px] truncate text-center text-[7px] uppercase leading-none tracking-wider ${labelTextClass}`}>
                         {character.name}
                       </span>
                     </div>
@@ -259,7 +280,7 @@ export default function StandardDeviationChart({
                      <div className={`${prominent ? 'h-3 w-3 border-2' : 'h-2.5 w-2.5 border'} rounded-full ${scoreboard ? 'border-[#d9f7ff] shadow-[0_0_8px_rgba(159,248,255,0.45)]' : 'border-[#503521] shadow-sm'} ${char.isOutlier ? 'bg-red-500 animate-ping' : char.color}`} />
                    )}
                    <div className={`mt-0.5 whitespace-nowrap font-mono font-bold leading-none ${prominent ? 'sr-only' : 'text-[9px]'}`}>
-                     {char.lastScore}
+                     {formatChartScore(scoreFor(char))}
                    </div>
                 </motion.div>
               );
@@ -270,19 +291,20 @@ export default function StandardDeviationChart({
               .map((character) => {
                 const layout = groupLayoutByCharacterId.get(character.id) ?? { lane: 0, offset: 0 };
                 const score = scoreFor(character);
+                const scoreLeft = insetPositionFor(score, compact ? 22 : 32);
 
                 return (
                   <motion.div
                     key={`${character.id}-score`}
-                    initial={{ opacity: 0, left: positionFor(score), marginLeft: layout.offset, y: 4 }}
-                    animate={{ opacity: 1, left: positionFor(score), marginLeft: layout.offset, y: 0 }}
+                    initial={{ opacity: 0, left: scoreLeft, marginLeft: layout.offset, y: 4 }}
+                    animate={{ opacity: 1, left: scoreLeft, marginLeft: layout.offset, y: 0 }}
                     transition={{ type: 'spring', stiffness: 220, damping: 28 }}
-                    className={`absolute z-10 -translate-x-1/2 font-mono font-bold leading-none ${
-                      compact ? 'text-[10px]' : 'text-xs'
+                    className={`absolute z-10 -translate-x-1/2 rounded-sm border border-transparent bg-[#172a3a]/70 px-1 font-mono font-bold leading-none shadow-[1px_1px_0_rgba(0,0,0,0.22)] ${
+                      compact ? 'text-[9px]' : 'text-[11px]'
                     } ${character.isOutlier ? 'text-red-400' : scoreboard ? 'text-[#9effc2]' : 'text-green-500'}`}
                     style={{ top: `${compact ? Math.max(2, axisTop - 18) : axisTop + 8}px` }}
                   >
-                    {score}
+                    {formatChartScore(score)}
                   </motion.div>
                 );
               })}
@@ -311,8 +333,8 @@ export default function StandardDeviationChart({
                     : ''
                 }`}
                 style={{ top: `${averageValueTop}px` }}
-                initial={{ left: positionFor(avg), opacity: 0, y: 5 }}
-                animate={{ left: positionFor(avg), opacity: 1, y: 0 }}
+                initial={{ left: consensusBoxLeft, opacity: 0, y: 5 }}
+                animate={{ left: consensusBoxLeft, opacity: 1, y: 0 }}
                 transition={{ type: 'spring', stiffness: 220, damping: 28 }}
               >
                 {averageBoxed && (
@@ -328,18 +350,18 @@ export default function StandardDeviationChart({
                   />
                 )}
                 {analysisRoundLabel && (
-                  <span className={`relative z-40 whitespace-nowrap font-mono font-bold uppercase tracking-widest text-[#9ff8ff] ${compact ? 'text-[8px]' : 'text-[10px]'}`}>
+                  <span className={`relative z-40 whitespace-nowrap font-mono font-bold uppercase tracking-widest text-[#9ff8ff] ${compact ? 'text-[7px]' : 'text-[9px]'}`}>
                     {analysisRoundLabel}
                   </span>
                 )}
                 <span
-                  className={`relative z-40 whitespace-nowrap font-pixel font-bold uppercase tracking-widest ${compact ? 'text-[8px]' : 'text-[12px]'} ${
+                  className={`relative z-40 whitespace-nowrap font-pixel font-bold uppercase tracking-widest ${compact ? 'text-[7px]' : 'text-[10px]'} ${
                     scoreboard ? 'text-[#ffd98a]' : mutedTextClass
                   }`}
                 >
                   Consensus Analysis
                 </span>
-                <span className={`relative z-40 font-mono font-bold ${compact ? 'text-lg' : 'text-3xl'}`}>{avg.toFixed(1)}</span>
+                <span className={`relative z-40 font-mono font-bold tabular-nums ${compact ? 'text-base' : 'text-2xl'}`}>{avg.toFixed(2)}</span>
                 {averageDetail && <span className="relative z-40">{averageDetail}</span>}
               </motion.div>
             )}

@@ -74,6 +74,19 @@ function resultKeyLabel(value: number | 'final') {
   return value === 'final' ? 'FINAL' : `ROUND ${String(value).padStart(2, '0')}`;
 }
 
+function contractScoreToChart(value?: number) {
+  return typeof value === 'number' ? Math.max(0, Math.min(100, value / 100)) : undefined;
+}
+
+function reviewerScoreForResultKey(
+  reviewer: ReviewRoundState['reviewers'][number],
+  resultKey: number | 'final',
+) {
+  if (resultKey === 1) return contractScoreToChart(reviewer.round0?.reviewerScore ?? reviewer.proposalScore);
+  if (resultKey === 2) return contractScoreToChart(reviewer.proposalScore);
+  return contractScoreToChart(reviewer.proposalScore);
+}
+
 export default function Billboard({
   characters,
   visible,
@@ -121,6 +134,18 @@ export default function Billboard({
   const selectedResultIndex = resultKeys.findIndex((key) => key === displayResultKey);
   const canBrowseResults = resultKeys.length > 1;
   const progressPhase: ReviewRoundState['phase'] = reviewRoundState?.phase ?? (isFinal ? 'final' : isSelection ? 'selection' : activeRound === 2 ? 'round2' : activeRound === 3 ? 'round3' : 'round1');
+  const consensusValue = displayResultKey === 'final'
+    ? finalSummary?.finalAverage
+    : displayResultKey === 1
+      ? contractScoreToChart(reviewRoundState?.round0ConsensusScore)
+      : displayResultKey === 2
+        ? contractScoreToChart(reviewRoundState?.round1ConsensusScore)
+        : contractScoreToChart(reviewRoundState?.round2ConsensusScore);
+  const scoreOverrideById = reviewRoundState?.reviewers.reduce<Record<string, number>>((scores, reviewer) => {
+    const score = reviewerScoreForResultKey(reviewer, displayResultKey);
+    if (typeof score === 'number') scores[reviewer.id] = score;
+    return scores;
+  }, {});
 
   useEffect(() => {
     if (!showNodeResults) return undefined;
@@ -180,6 +205,8 @@ export default function Billboard({
         analysisRoundLabel={resultKeyLabel(displayResultKey)}
         highlightUpdate={highlightConsensus}
         compact={isRoundInProgress}
+        consensusValue={consensusValue}
+        scoreOverrideById={scoreOverrideById}
         averageDetail={finalSummary ? (
           <span className="relative flex items-center justify-center gap-1 font-mono text-[13px] font-bold leading-none text-[#ffd98a]">
             <button

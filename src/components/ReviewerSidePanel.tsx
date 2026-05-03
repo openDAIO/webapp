@@ -93,14 +93,15 @@ export default function ReviewerSidePanel({ state, reviewer, roundCompleted = fa
   const weight = currentWeight(reviewer, state, revealCurrentRound);
   const weightedScore = currentWeightedScore(reviewer, state, revealCurrentRound);
   const consensus = currentConsensus(state, revealCurrentRound);
-  const impact = typeof weightedScore === 'number' && typeof consensus === 'number'
-    ? weightedScore - consensus
+  const proposalScore = reviewer.proposalScore;
+  const impact = typeof proposalScore === 'number' && typeof consensus === 'number'
+    ? proposalScore - consensus
     : undefined;
   const currentScoreLabel = revealCurrentRound
-    ? formatScore(weightedScore ?? reviewer.proposalScore)
+    ? formatScore(proposalScore)
     : state.phase === 'round1'
       ? 'Pending'
-      : formatScore(weightedScore);
+      : formatScore(proposalScore);
 
   return (
     <section className="review-room-activity-panel pixel-box warm-panel relative flex h-full min-h-0 w-full flex-col overflow-hidden p-4 text-[#202528]">

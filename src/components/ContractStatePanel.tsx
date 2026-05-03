@@ -7,21 +7,28 @@ interface ContractStatePanelProps {
   requestId?: string | null;
 }
 
-function formatBigInt(value: bigint, fallback = '--') {
-  return value > 0n ? value.toString() : fallback;
-}
-
 function formatScore(value: bigint) {
-  return `${(Number(value) / 100).toFixed(2)}%`;
+  return (Number(value) / 100).toFixed(2);
 }
 
-function RoundRow({ label, round }: { label: string; round: DaioRoundAggregate }) {
+function RoundRow({
+  label,
+  detail,
+  round,
+}: {
+  label: string;
+  detail: string;
+  round: DaioRoundAggregate;
+}) {
   const status = round.closed ? (round.aborted ? 'aborted' : 'closed') : 'open';
   return (
     <div className="grid grid-cols-[5.5rem_minmax(0,1fr)_4.25rem] items-center gap-2 border border-[#d7b98f] bg-[#fffef3] px-2 py-1.5">
-      <span className="text-[9px] font-bold uppercase tracking-wider text-[#6b563f]">{label}</span>
+      <span className="text-[9px] font-bold uppercase tracking-wider text-[#6b563f]">
+        {label}
+        <span className="block text-[7px] text-[#8c745b]">{detail}</span>
+      </span>
       <span className="min-w-0 font-mono text-[10px] font-bold text-[#2f5d7e]">
-        score {formatScore(round.score)} · weight {formatBigInt(round.totalWeight, '0')}
+        score {formatScore(round.score)}
       </span>
       <span className={`text-right text-[9px] font-bold uppercase ${
         round.closed ? 'text-[#2f6f35]' : 'text-[#9c6a2e]'
@@ -75,9 +82,9 @@ export default function ContractStatePanel({ daioData, requestId }: ContractStat
         )}
 
         <div className="space-y-1">
-          <RoundRow label="Round 0" round={daioData.roundAggregates.review} />
-          <RoundRow label="Round 1" round={daioData.roundAggregates.auditConsensus} />
-          <RoundRow label="Round 2" round={daioData.roundAggregates.reputationFinal} />
+          <RoundRow label="Round 1" detail="Review" round={daioData.roundAggregates.review} />
+          <RoundRow label="Round 2" detail="Audit" round={daioData.roundAggregates.auditConsensus} />
+          <RoundRow label="Round 3" detail="Final" round={daioData.roundAggregates.reputationFinal} />
         </div>
 
         <div className="mt-2 grid grid-cols-3 gap-1.5 text-center">

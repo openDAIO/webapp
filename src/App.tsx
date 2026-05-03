@@ -44,6 +44,7 @@ import {
   selectReviewNodes,
 } from './utils/nodeSelection';
 import { AUDIT_QUORUM, createReviewRoundState } from './utils/reviewScoring';
+import { daioProfileReputationPercent } from './utils/daioReputation';
 import {
   CHARACTER_BASE_MOVE_DURATION_MS,
   FINAL_RESULT_EXPAND_DELAY_MS,
@@ -745,7 +746,7 @@ function buildRoundScore(char: AICharacter, round: number, conversation?: Conver
 }
 
 function scoreScaleToChart(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value / 100)));
+  return Math.max(0, Math.min(100, Number((value / 100).toFixed(2))));
 }
 
 function buildProtocolRoundScore(
@@ -755,7 +756,7 @@ function buildProtocolRoundScore(
   round: number,
 ): RoundScore {
   if (round === 1) {
-    const score = scoreScaleToChart(reviewer.round0?.weightedScore ?? reviewer.proposalScore);
+    const score = scoreScaleToChart(reviewer.round0?.reviewerScore ?? reviewer.proposalScore);
 
     return {
       round,
@@ -767,7 +768,7 @@ function buildProtocolRoundScore(
   }
 
   if (round === 2) {
-    const score = scoreScaleToChart(reviewer.round1?.weightedScore ?? reviewer.proposalScore);
+    const score = scoreScaleToChart(reviewer.proposalScore);
     const incomingCount = reviewer.round1?.incomingAuditScores.length ?? 0;
 
     return {
@@ -780,7 +781,7 @@ function buildProtocolRoundScore(
     };
   }
 
-  const score = scoreScaleToChart(reviewer.round2?.weightedScore ?? reviewer.proposalScore);
+  const score = scoreScaleToChart(reviewer.proposalScore);
 
   return {
     round,
@@ -1607,6 +1608,7 @@ export default function App() {
         ? selectedAgentAddresses[selectedSlot ?? index] ?? character.agentAddress ?? fallbackAgentAddresses[index]
         : standbyAgentAddresses[standbyAgentIndex++] ?? character.agentAddress ?? fallbackAgentAddresses[index];
       const fallbackProfile = profileForCharacter(index, agentAddress);
+      const chainReputationScore = daioProfileReputationPercent(fallbackProfile);
       const displayName = agentDisplayName(
         agentAddress,
         statusByAgentAddress,
@@ -1618,9 +1620,14 @@ export default function App() {
         ...character,
         agentAddress,
         name: displayName ?? character.name,
+        reputationScore: fallbackProfile ? chainReputationScore : character.reputationScore,
         selected,
         selectionStatus: selected ? ('selected' as const) : ('standby' as const),
-        status: nodeStatusFromContractStatus(requestStatus, selected),
+        status: nextPhase === 'SELECTION'
+          ? 'IDLE'
+          : nextPhase === 'MOVING_TO_ROOMS' && character.status === 'MOVING'
+            ? 'MOVING'
+            : nodeStatusFromContractStatus(requestStatus, selected),
       };
     });
     const reviewCharacters = getSelectedReviewNodes(nextCharacters);
@@ -1981,28 +1988,26 @@ export default function App() {
     addLog(`Round 1 queued for ${participants.length} selected review nodes.`);
   }, [addLog]);
 
-  const startSelectedReview = useCallback(() => {
-    if (phase !== 'SELECTION' || !isNodeSelectionReady) return;
-
-    if (isContractDrivenReview && activeAgentStatusRequestId) {
-      contractSelectionAnimatedRequestRef.current = activeAgentStatusRequestId;
-      queueRoundOneFromSelection('chain');
-      return;
+  useEffect(() => {
+    if (phase !== 'SELECTION' || !isNodeSelectionReady) return undefined;
+    if (
+      isContractDrivenReview &&
+      activeAgentStatusRequestId &&
+      contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId
+    ) {
+      return undefined;
     }
 
-    queueRoundOneFromSelection('local');
-  }, [activeAgentStatusRequestId, isContractDrivenReview, isNodeSelectionReady, phase, queueRoundOneFromSelection]);
-
-  useEffect(() => {
-    if (!isContractDrivenReview || !activeAgentStatusRequestId) return undefined;
-    if (phase !== 'SELECTION' || !isNodeSelectionReady) return undefined;
-    if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return undefined;
-
     const timer = window.setTimeout(() => {
-      if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return;
+      if (isContractDrivenReview && activeAgentStatusRequestId) {
+        if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return;
 
-      contractSelectionAnimatedRequestRef.current = activeAgentStatusRequestId;
-      queueRoundOneFromSelection('chain');
+        contractSelectionAnimatedRequestRef.current = activeAgentStatusRequestId;
+        queueRoundOneFromSelection('chain');
+        return;
+      }
+
+      queueRoundOneFromSelection('local');
     }, NODE_SELECTION_SELECTED_HOLD_MS);
 
     return () => window.clearTimeout(timer);
@@ -2151,6 +2156,12 @@ export default function App() {
     const protocolReviewerById = new Map(protocolState?.reviewers.map((reviewer) => [reviewer.id, reviewer]) ?? []);
     const calculated = buildNodeResultRows(roomFinalInputs, undefined, roomReviewBounty?.amount ?? 0);
     const chainSnapshotByAddress = snapshotByAddress(daioSnapshot);
+    const profileReputationByAddress = new Map(
+      daioSnapshot.reviewerProfiles.map((profile) => [
+        profile.address.toLowerCase(),
+        daioProfileReputationPercent(profile),
+      ]),
+    );
     const shouldUseChainAccounting = isContractDrivenReview && daioSnapshot.roundAggregates.reputationFinal.closed;
 
     if (protocolState?.round2ConsensusScore !== undefined) {
@@ -2192,7 +2203,7 @@ export default function App() {
 
         return {
           ...node,
-          finalScore: scoreScaleToChart(reviewNode.round2?.weightedScore ?? node.finalScore * 100),
+          finalScore: scoreScaleToChart(reviewNode.proposalScore),
           reputationAfter: reviewNode.round2?.reputationScore !== undefined
             ? scoreScaleToChart(reviewNode.round2.reputationScore)
             : node.reputationAfter,
@@ -2270,7 +2281,9 @@ export default function App() {
           isOutlier: result.isOutlier,
           lastScore: result.finalScore,
           stakeAmount: Math.max(0, result.stakeAmount + (result.rewardSource === 'chain' ? -result.slashAmount : result.rewardAmount - result.slashAmount)),
-          reputationScore: result.reputationAfter,
+          reputationScore: result.rewardSource === 'chain' && result.reviewNode?.agentAddress
+            ? profileReputationByAddress.get(result.reviewNode.agentAddress.toLowerCase()) ?? result.reputationAfter
+            : result.reputationAfter,
         };
       }),
     );
@@ -2808,7 +2821,6 @@ export default function App() {
                   <NodeSelectionScene
                     nodes={characters}
                     isComplete={isNodeSelectionReady}
-                    onStartReview={startSelectedReview}
                     onInspectNode={inspectReviewer}
                   />
                 )}
