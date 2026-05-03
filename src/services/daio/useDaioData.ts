@@ -2,7 +2,7 @@
  * useDaioData — multicall read hook for on-chain DAIO state.
  *
  * Batched RPC round-trips (Multicall3) every 5 s:
- *   Batch 1 (always): baseRequestFee, balances, pool slot0, latestRequestState
+ *   Batch 1 (always): baseRequestFee, balances, StateView pool slot0, latestRequestState
  *   Batch 2 (request-dependent): DAIOInfoReader lifecycle/phase/participants
  *   Batch 3 (request+attempt-dependent): round aggregates and audit participants
  *
@@ -10,7 +10,17 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, useReadContracts } from 'wagmi';
-import { DAIO_SLOT, buildDaioContracts, CONTRACT_ADDRESSES, ROUND_LEDGER_ABI, COMMIT_REVEAL_ABI, DAIO_INFO_READER_ABI, REVIEWER_REGISTRY_ABI } from './queries';
+import {
+  DAIO_SLOT,
+  buildDaioContracts,
+  CONTRACT_ADDRESSES,
+  ROUND_LEDGER_ABI,
+  COMMIT_REVEAL_ABI,
+  DAIO_INFO_READER_ABI,
+  REVIEWER_REGISTRY_ABI,
+  REPUTATION_LEDGER_ABI,
+  ERC8004_ADAPTER_ABI,
+} from './queries';
 import ADDRESSES_JSON from '../../contracts/addresses.json';
 
 // ─── Pool constants ───────────────────────────────────────────────────────────
@@ -31,6 +41,7 @@ const ROUND_REVIEW = 0;
 const ROUND_AUDIT_CONSENSUS = 1;
 const ROUND_REPUTATION_FINAL = 2;
 const CHAIN_REFETCH_INTERVAL_MS = 5_000;
+const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000' as const;
 
 export const DAIO_REQUEST_STATUS_NAMES = [
   'None',
@@ -93,7 +104,7 @@ export interface DaioData {
   usdaioDecimals: number;
 
   // ── Uniswap V4 pool rate ───────────────────────────────────────────────────
-  /** Raw sqrtPriceX96 from PoolManager.getSlot0. */
+  /** Raw sqrtPriceX96 from Uniswap v4 StateView.getSlot0. */
   poolSqrtPriceX96: bigint | undefined;
   /** Pool spot rate: USDAIO received per 1 ETH (before fee). */
   poolRateUsdaioPerEth: number;
@@ -121,6 +132,7 @@ export interface DaioData {
   latestRequestCompleted: boolean;
   requestLifecycle: DaioRequestLifecycle | null;
   requestPhase: DaioRequestPhase | null;
+  requestConfig: DaioRequestConfig | null;
 
   // ── Round data (requestId-dependent) ──────────────────────────────────────
   /** Total score aggregated across all reviewers for this request. */
@@ -144,6 +156,8 @@ export interface DaioData {
   revealedReviewers: readonly `0x${string}`[];
   /** Addresses of auditors who participated. */
   auditParticipants: readonly `0x${string}`[];
+  /** Submitted audit report count from DAIOInfoReader.auditTargets(requestId, auditor). */
+  auditReportCount: number;
   /** Registered reviewer roster from ReviewerRegistry.getReviewers(). */
   registeredReviewers: readonly `0x${string}`[];
   reviewerRoundSnapshots: DaioReviewerRoundSnapshot[];
@@ -179,8 +193,24 @@ export interface DaioRequestLifecycle {
   retryCount: bigint;
   committeeEpoch: bigint;
   auditEpoch: bigint;
+  reviewCommitCount: bigint;
+  reviewRevealCount: bigint;
+  auditCommitCount: bigint;
+  auditRevealCount: bigint;
+  auditCoverage: bigint;
   activePriority: bigint;
   lowConfidence: boolean;
+}
+
+export interface DaioRequestConfig {
+  reviewCommitQuorum: bigint;
+  reviewRevealQuorum: bigint;
+  auditCommitQuorum: bigint;
+  auditRevealQuorum: bigint;
+  auditTargetLimit: bigint;
+  maxRetries: bigint;
+  auditCommitTimeout: bigint;
+  auditRevealTimeout: bigint;
 }
 
 export interface DaioRequestPhase {
@@ -227,17 +257,30 @@ export interface DaioReviewerRoundSnapshot {
 
 export interface DaioReviewerProfile {
   address: `0x${string}`;
+  ensNode: `0x${string}`;
   ensName?: string;
   registered: boolean;
   active: boolean;
   suspended: boolean;
   agentId: bigint;
   stake: bigint;
+  availableStake: bigint;
+  lockedStake: bigint;
   domainMask: bigint;
   completedRequests: bigint;
   semanticStrikes: bigint;
   protocolFaults: bigint;
   cooldownUntilBlock: bigint;
+  erc8004AgentWallet?: `0x${string}`;
+  reputation: DaioReviewerReputation;
+}
+
+export interface DaioReviewerReputation {
+  samples: bigint;
+  reportQuality: bigint;
+  auditReliability: bigint;
+  finalContribution: bigint;
+  protocolCompliance: bigint;
 }
 
 const EMPTY_ROUND_AGGREGATE: DaioRoundAggregate = {
@@ -266,6 +309,14 @@ const EMPTY_REVIEWER_ROUND_ACCOUNTING: DaioReviewerRoundAccounting = {
   lastSlashReasonHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
   protocolFault: false,
   semanticFault: false,
+};
+
+const EMPTY_REVIEWER_REPUTATION: DaioReviewerReputation = {
+  samples: 0n,
+  reportQuality: 0n,
+  auditReliability: 0n,
+  finalContribution: 0n,
+  protocolCompliance: 0n,
 };
 
 function parseRoundAggregate(
@@ -320,6 +371,29 @@ function tupleField<T>(tuple: unknown, index: number, name: string, fallback: T)
   return fallback;
 }
 
+function uintField(tuple: unknown, index: number, name: string, fallback = 0n) {
+  const value = tupleField<unknown>(tuple, index, name, fallback);
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return BigInt(Math.max(0, Math.trunc(value)));
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
+  return fallback;
+}
+
+function parseRequestConfig(config: unknown): DaioRequestConfig | null {
+  if (!config) return null;
+
+  return {
+    reviewCommitQuorum: uintField(config, 2, 'reviewCommitQuorum'),
+    reviewRevealQuorum: uintField(config, 3, 'reviewRevealQuorum'),
+    auditCommitQuorum: uintField(config, 4, 'auditCommitQuorum'),
+    auditRevealQuorum: uintField(config, 5, 'auditRevealQuorum'),
+    auditTargetLimit: uintField(config, 6, 'auditTargetLimit'),
+    maxRetries: uintField(config, 13, 'maxRetries'),
+    auditCommitTimeout: uintField(config, 22, 'auditCommitTimeout'),
+    auditRevealTimeout: uintField(config, 23, 'auditRevealTimeout'),
+  };
+}
+
 function addressArray(value: unknown): readonly `0x${string}`[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is `0x${string}` => typeof entry === 'string' && entry.startsWith('0x'))
@@ -367,7 +441,7 @@ export function useDaioData(): DaioData {
   const usdaioAllowance = data?.[DAIO_SLOT.USDAIO_ALLOWANCE]?.result  as bigint | undefined;
   const usdaioDecimals  = (data?.[DAIO_SLOT.USDAIO_DECIMALS]?.result  as number | undefined) ?? 18;
 
-  // getSlot0 returns a tuple [sqrtPriceX96, tick, protocolFee, lpFee]
+  // StateView.getSlot0 returns a tuple [sqrtPriceX96, tick, protocolFee, lpFee]
   const slot0 = data?.[DAIO_SLOT.POOL_SLOT0]?.result as
     | readonly [bigint, number, number, number]
     | undefined;
@@ -410,6 +484,12 @@ export function useDaioData(): DaioData {
             functionName: 'requestParticipants' as const,
             args:         [latestRequestId] as const,
           },
+          {
+            address:      CONTRACT_ADDRESSES.daioInfoReader,
+            abi:          DAIO_INFO_READER_ABI,
+            functionName: 'requestConfig' as const,
+            args:         [latestRequestId] as const,
+          },
         ] as const)
       : [],
     query: {
@@ -423,6 +503,8 @@ export function useDaioData(): DaioData {
   const requestInfo = hasRequest ? requestData?.[0]?.result : undefined;
   const requestPhaseTuple = hasRequest ? requestData?.[1]?.result : undefined;
   const requestParticipantsTuple = hasRequest ? requestData?.[2]?.result : undefined;
+  const requestConfigTuple = hasRequest ? requestData?.[3]?.result : undefined;
+  const requestConfig = parseRequestConfig(requestConfigTuple);
   const requestAttempt = requestInfo
     ? tupleField<bigint>(requestInfo, 14, 'retryCount', REQUEST_ATTEMPT_FALLBACK)
     : REQUEST_ATTEMPT_FALLBACK;
@@ -446,6 +528,11 @@ export function useDaioData(): DaioData {
         retryCount: requestAttempt,
         committeeEpoch: tupleField<bigint>(requestInfo, 15, 'committeeEpoch', 0n),
         auditEpoch: tupleField<bigint>(requestInfo, 16, 'auditEpoch', 0n),
+        reviewCommitCount: tupleField<bigint>(requestInfo, 17, 'reviewCommitCount', 0n),
+        reviewRevealCount: tupleField<bigint>(requestInfo, 18, 'reviewRevealCount', 0n),
+        auditCommitCount: tupleField<bigint>(requestInfo, 19, 'auditCommitCount', 0n),
+        auditRevealCount: tupleField<bigint>(requestInfo, 20, 'auditRevealCount', 0n),
+        auditCoverage: tupleField<bigint>(requestInfo, 23, 'auditCoverage', 0n),
         activePriority: tupleField<bigint>(requestInfo, 13, 'activePriority', 0n),
         lowConfidence: tupleField<boolean>(requestInfo, 26, 'lowConfidence', false),
       }
@@ -540,6 +627,36 @@ export function useDaioData(): DaioData {
     [hasRequest, roundData],
   );
 
+  const auditTargetContracts = useMemo(() => {
+    if (!hasRequest || auditParticipants.length === 0) return [];
+
+    return auditParticipants.map((auditor) => ({
+      address:      CONTRACT_ADDRESSES.daioInfoReader,
+      abi:          DAIO_INFO_READER_ABI,
+      functionName: 'auditTargets' as const,
+      args:         [latestRequestId, auditor] as const,
+    }));
+  }, [auditParticipants, hasRequest, latestRequestId]);
+
+  const { data: auditTargetData, refetch: refetchAuditTargets } = useReadContracts({
+    contracts: auditTargetContracts,
+    query: {
+      enabled:                     hasRequest && auditTargetContracts.length > 0,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  const auditReportCount = useMemo(
+    () => auditParticipants.reduce((count, _, index) => {
+      const targets = auditTargetData?.[index]?.result;
+      const submittedTargets = addressArray(tupleField<unknown>(targets, 0, 'submittedTargets', []));
+      return count + submittedTargets.length;
+    }, 0),
+    [auditParticipants, auditTargetData],
+  );
+
   const reviewerAddresses = useMemo(
     () => uniqueAddresses([reviewParticipants, auditParticipants]),
     [auditParticipants, reviewParticipants],
@@ -594,12 +711,32 @@ export function useDaioData(): DaioData {
   const reviewerProfileContracts = useMemo(() => {
     if (profileAddresses.length === 0) return [];
 
-    return profileAddresses.map((reviewer) => ({
-      address:      CONTRACT_ADDRESSES.reviewerRegistry,
-      abi:          REVIEWER_REGISTRY_ABI,
-      functionName: 'getReviewer' as const,
-      args:         [reviewer] as const,
-    }));
+    return profileAddresses.flatMap((reviewer) => ([
+      {
+        address:      CONTRACT_ADDRESSES.reviewerRegistry,
+        abi:          REVIEWER_REGISTRY_ABI,
+        functionName: 'getReviewer' as const,
+        args:         [reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.reviewerRegistry,
+        abi:          REVIEWER_REGISTRY_ABI,
+        functionName: 'availableStake' as const,
+        args:         [reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.reviewerRegistry,
+        abi:          REVIEWER_REGISTRY_ABI,
+        functionName: 'lockedStake' as const,
+        args:         [reviewer] as const,
+      },
+      {
+        address:      CONTRACT_ADDRESSES.reputationLedger,
+        abi:          REPUTATION_LEDGER_ABI,
+        functionName: 'reputations' as const,
+        args:         [reviewer] as const,
+      },
+    ]));
   }, [profileAddresses]);
 
   const { data: reviewerProfileData, refetch: refetchReviewerProfiles } = useReadContracts({
@@ -612,34 +749,88 @@ export function useDaioData(): DaioData {
     },
   });
 
-  const reviewerProfiles = useMemo(
+  const baseReviewerProfiles = useMemo(
     () => profileAddresses.map((address, index): DaioReviewerProfile | null => {
-      const profile = reviewerProfileData?.[index]?.result as
-        | readonly [boolean, boolean, boolean, bigint, bigint, bigint, bigint, bigint, bigint, bigint]
-        | undefined;
+      const baseIndex = index * 4;
+      const profile = reviewerProfileData?.[baseIndex]?.result;
       if (!profile) return null;
 
-      const registeredIndex = registeredReviewers.findIndex(
-        (reviewer) => reviewer.toLowerCase() === address.toLowerCase(),
-      );
+      const availableStake = (reviewerProfileData?.[baseIndex + 1]?.result ?? 0n) as bigint;
+      const lockedStake = (reviewerProfileData?.[baseIndex + 2]?.result ?? 0n) as bigint;
+      const reputation = reviewerProfileData?.[baseIndex + 3]?.result as
+        | readonly [bigint, bigint, bigint, bigint, bigint]
+        | undefined;
+      const ensName = tupleField<string>(profile, 11, 'ensName', '').trim();
 
       return {
         address,
-        ensName: registeredIndex >= 0 ? `reviewer-${registeredIndex + 1}.daio.eth` : undefined,
-        registered: profile[0],
-        active: profile[1],
-        suspended: profile[2],
-        agentId: profile[3],
-        stake: profile[4],
-        domainMask: profile[5],
-        completedRequests: profile[6],
-        semanticStrikes: profile[7],
-        protocolFaults: profile[8],
-        cooldownUntilBlock: profile[9],
+        ensNode: tupleField<`0x${string}`>(profile, 10, 'ensNode', ZERO_BYTES32),
+        ensName: ensName || undefined,
+        registered: tupleField(profile, 0, 'registered', false),
+        active: tupleField(profile, 1, 'active', false),
+        suspended: tupleField(profile, 2, 'suspended', false),
+        agentId: tupleField(profile, 3, 'agentId', 0n),
+        stake: tupleField(profile, 4, 'stake', 0n),
+        availableStake,
+        lockedStake,
+        domainMask: tupleField(profile, 5, 'domainMask', 0n),
+        completedRequests: tupleField(profile, 6, 'completedRequests', 0n),
+        semanticStrikes: tupleField(profile, 7, 'semanticStrikes', 0n),
+        protocolFaults: tupleField(profile, 8, 'protocolFaults', 0n),
+        cooldownUntilBlock: tupleField(profile, 9, 'cooldownUntilBlock', 0n),
+        reputation: reputation
+          ? {
+              samples: reputation[0],
+              reportQuality: reputation[1],
+              auditReliability: reputation[2],
+              finalContribution: reputation[3],
+              protocolCompliance: reputation[4],
+            }
+          : EMPTY_REVIEWER_REPUTATION,
       };
     }).filter((profile): profile is DaioReviewerProfile => Boolean(profile)),
-    [profileAddresses, registeredReviewers, reviewerProfileData],
+    [profileAddresses, reviewerProfileData],
   );
+
+  const erc8004AgentProfiles = useMemo(
+    () => baseReviewerProfiles.filter((profile) => profile.agentId !== 0n),
+    [baseReviewerProfiles],
+  );
+
+  const erc8004AgentWalletContracts = useMemo(() => (
+    erc8004AgentProfiles.map((profile) => ({
+      address:      CONTRACT_ADDRESSES.erc8004Adapter,
+      abi:          ERC8004_ADAPTER_ABI,
+      functionName: 'agentWallet' as const,
+      args:         [profile.agentId] as const,
+    }))
+  ), [erc8004AgentProfiles]);
+
+  const { data: erc8004AgentWalletData, refetch: refetchErc8004AgentWallets } = useReadContracts({
+    contracts: erc8004AgentWalletContracts,
+    query: {
+      enabled:                     erc8004AgentWalletContracts.length > 0,
+      refetchInterval:             CHAIN_REFETCH_INTERVAL_MS,
+      staleTime:                   0,
+      refetchIntervalInBackground: false,
+    },
+  });
+
+  const reviewerProfiles = useMemo<DaioReviewerProfile[]>(() => {
+    const walletByAddress = new Map<string, `0x${string}`>();
+    erc8004AgentProfiles.forEach((profile, index) => {
+      const wallet = erc8004AgentWalletData?.[index]?.result as `0x${string}` | undefined;
+      if (wallet && wallet !== '0x0000000000000000000000000000000000000000') {
+        walletByAddress.set(profile.address.toLowerCase(), wallet);
+      }
+    });
+
+    return baseReviewerProfiles.map((profile) => {
+      const erc8004AgentWallet = walletByAddress.get(profile.address.toLowerCase());
+      return erc8004AgentWallet ? { ...profile, erc8004AgentWallet } : profile;
+    });
+  }, [baseReviewerProfiles, erc8004AgentProfiles, erc8004AgentWalletData]);
+
   const registeredReviewerProfiles = useMemo(() => {
     const profileByAddress = new Map(reviewerProfiles.map((profile) => [profile.address.toLowerCase(), profile]));
     return registeredReviewers
@@ -694,19 +885,25 @@ export function useDaioData(): DaioData {
     refetch();
     if (hasRequest) refetchRequest();
     if (hasRequest) refetchRound();
+    if (hasRequest && auditTargetContracts.length > 0) refetchAuditTargets();
     if (hasRequest && reviewerScoreContracts.length > 0) refetchReviewerScores();
     if (reviewerProfileContracts.length > 0) refetchReviewerProfiles();
+    if (erc8004AgentWalletContracts.length > 0) refetchErc8004AgentWallets();
   }, [
     refetch,
     refetchRequest,
     refetchRound,
+    refetchAuditTargets,
     refetchReviewerScores,
     refetchReviewerProfiles,
+    refetchErc8004AgentWallets,
     hasRequest,
     latestRequestId,
     requestAttempt,
+    auditTargetContracts.length,
     reviewerScoreContracts.length,
     reviewerProfileContracts.length,
+    erc8004AgentWalletContracts.length,
   ]);
 
   useEffect(() => {
@@ -719,6 +916,11 @@ export function useDaioData(): DaioData {
           requestLifecycle.retryCount,
           requestLifecycle.committeeEpoch,
           requestLifecycle.auditEpoch,
+          requestLifecycle.reviewCommitCount,
+          requestLifecycle.reviewRevealCount,
+          requestLifecycle.auditCommitCount,
+          requestLifecycle.auditRevealCount,
+          requestLifecycle.auditCoverage,
           requestLifecycle.activePriority,
           requestLifecycle.lowConfidence,
         ].map(String).join(':')
@@ -753,16 +955,31 @@ export function useDaioData(): DaioData {
             retryCount: requestLifecycle.retryCount.toString(),
             committeeEpoch: requestLifecycle.committeeEpoch.toString(),
             auditEpoch: requestLifecycle.auditEpoch.toString(),
+            reviewCommitCount: requestLifecycle.reviewCommitCount.toString(),
+            reviewRevealCount: requestLifecycle.reviewRevealCount.toString(),
+            auditCommitCount: requestLifecycle.auditCommitCount.toString(),
+            auditRevealCount: requestLifecycle.auditRevealCount.toString(),
+            auditCoverage: requestLifecycle.auditCoverage.toString(),
             activePriority: requestLifecycle.activePriority.toString(),
             lowConfidence: requestLifecycle.lowConfidence,
           }
         : null,
       phase: requestPhase
         ? {
+            status: requestPhase.status,
             count: requestPhase.count.toString(),
             quorum: requestPhase.quorum.toString(),
             deadline: requestPhase.deadline.toString(),
             timedOut: requestPhase.timedOut,
+          }
+        : null,
+      requestConfig: requestConfig
+        ? {
+            reviewCommitQuorum: requestConfig.reviewCommitQuorum.toString(),
+            reviewRevealQuorum: requestConfig.reviewRevealQuorum.toString(),
+            auditCommitQuorum: requestConfig.auditCommitQuorum.toString(),
+            auditRevealQuorum: requestConfig.auditRevealQuorum.toString(),
+            auditTargetLimit: requestConfig.auditTargetLimit.toString(),
           }
         : null,
     });
@@ -776,6 +993,7 @@ export function useDaioData(): DaioData {
     registeredReviewers,
     requestLifecycle,
     requestPhase,
+    requestConfig,
   ]);
 
   useEffect(() => {
@@ -805,6 +1023,7 @@ export function useDaioData(): DaioData {
       revealedReviewers.join(','),
       reviewParticipants.join(','),
       auditParticipants.join(','),
+      auditReportCount,
       reviewerRoundSnapshots.map((snapshot) => [
         snapshot.address,
         snapshot.review.available,
@@ -857,6 +1076,7 @@ export function useDaioData(): DaioData {
       revealedReviewers,
       reviewParticipants,
       auditParticipants,
+      auditReportCount,
       reviewerRoundSnapshots: reviewerRoundSnapshots.map((snapshot) => ({
         address: snapshot.address,
         review: {
@@ -915,6 +1135,7 @@ export function useDaioData(): DaioData {
     revealedReviewers,
     reviewParticipants,
     auditParticipants,
+    auditReportCount,
     reviewerRoundSnapshots,
   ]);
 
@@ -943,6 +1164,7 @@ export function useDaioData(): DaioData {
     latestRequestCompleted,
     requestLifecycle,
     requestPhase,
+    requestConfig,
 
     roundTotalScore,
     roundReviewerCount,
@@ -953,6 +1175,7 @@ export function useDaioData(): DaioData {
     reviewCommitters,
     revealedReviewers,
     auditParticipants,
+    auditReportCount,
     registeredReviewers,
     reviewerRoundSnapshots,
     reviewerProfiles,

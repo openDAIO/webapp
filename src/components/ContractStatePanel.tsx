@@ -1,4 +1,5 @@
 import type { DaioData, DaioRoundAggregate } from '../services/daio/useDaioData';
+import { AUDIT_QUORUM } from '../utils/reviewScoring';
 import { PixelFrameChrome } from './PixelFrame';
 
 interface ContractStatePanelProps {
@@ -11,7 +12,7 @@ function formatBigInt(value: bigint, fallback = '--') {
 }
 
 function formatScore(value: bigint) {
-  return `${formatBigInt(value, '0')}/10000`;
+  return `${(Number(value) / 100).toFixed(2)}%`;
 }
 
 function RoundRow({ label, round }: { label: string; round: DaioRoundAggregate }) {
@@ -38,6 +39,8 @@ export default function ContractStatePanel({ daioData, requestId }: ContractStat
   const phaseProgress = daioData.requestPhase && daioData.requestPhase.quorum > 0n
     ? `${daioData.requestPhase.count.toString()}/${daioData.requestPhase.quorum.toString()}`
     : '--';
+  const auditReportQuorum = Math.max(AUDIT_QUORUM, Number(daioData.requestConfig?.auditRevealQuorum ?? 0n));
+  const auditReportProgress = `${Math.min(daioData.auditReportCount, auditReportQuorum)}/${auditReportQuorum}`;
   const reviewReady = daioData.roundAggregates.review.closed;
   const auditReady = daioData.roundAggregates.auditConsensus.closed;
   const finalReady = daioData.roundAggregates.reputationFinal.closed;
@@ -63,7 +66,7 @@ export default function ContractStatePanel({ daioData, requestId }: ContractStat
           <Info label="attempt" value={lifecycle?.retryCount.toString() ?? daioData.requestAttempt.toString()} />
           <Info label="agents" value={String(daioData.registeredReviewers.length)} />
           <Info label="reviewers" value={String(daioData.reviewParticipants.length)} />
-          <Info label="auditors" value={String(daioData.auditParticipants.length)} />
+          <Info label="audit q" value={auditReportProgress} />
         </div>
         {phaseProgress !== '--' && (
           <div className="mb-2 border border-[#d7b98f] bg-[#fffef3] px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-[#6b563f]">

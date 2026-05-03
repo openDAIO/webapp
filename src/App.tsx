@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, DoorOpen, FileDown, LayoutDashboard } from 'lucide-react';
-import { useDaioData, type DaioData, type DaioReviewerRoundSnapshot } from './services/daio/useDaioData';
+import { useDaioData, type DaioData, type DaioReviewerProfile, type DaioReviewerRoundSnapshot } from './services/daio/useDaioData';
 import { getAgentStatuses, type AgentStatus } from './services/daio/contentApi';
 import { AICharacter, Coordinates, FinalEvaluationSummary, LogEntry, NodeEvaluationResult, ReviewGamePhase, ReviewRoundState, ReviewerNode, RoundEvaluationHistory, RoundScore, SimulationPhase } from './types';
 import { buildAICharactersForRoom } from './data/mockCharacters';
@@ -47,6 +47,8 @@ import { AUDIT_QUORUM, createReviewRoundState } from './utils/reviewScoring';
 import {
   CHARACTER_BASE_MOVE_DURATION_MS,
   FINAL_RESULT_EXPAND_DELAY_MS,
+  FLOW_REVEAL_INITIAL_DELAY_MS,
+  FLOW_REVEAL_STEP_MS,
   ROUND_INTRO_DURATION_MS,
   ROUND_MOVEMENT_SETTLE_MS,
   ROUND_RESULT_HOLD_MS,
@@ -82,6 +84,11 @@ const REVIEW_LOG_PREFIX = '[DAIO][review]';
 // Frontend fallback: five spawned agents with a three-reviewer committee.
 // If chain participants are available, the UI uses the chain count instead.
 const CONTRACT_EXPECTED_REVIEWER_COUNT = DEFAULT_SELECTED_NODE_COUNT;
+const NODE_SELECTION_DRAW_MS = 3600;
+const NODE_SELECTION_SELECTED_HOLD_MS = 2200;
+const STATUS_AUDIT_COMMIT = 4;
+const STATUS_AUDIT_REVEAL = 5;
+const STATUS_FINALIZED = 6;
 
 function logReview(event: string, payload: Record<string, unknown>) {
   console.debug(`${REVIEW_LOG_PREFIX} ${event}`, payload);
@@ -89,6 +96,19 @@ function logReview(event: string, payload: Record<string, unknown>) {
 
 function isHexAddress(value: string | undefined): value is `0x${string}` {
   return Boolean(value && /^0x[a-fA-F0-9]{40}$/.test(value));
+}
+
+function uniqueHexAddresses(groups: readonly (readonly (string | undefined)[])[]): `0x${string}`[] {
+  const byLowercase = new Map<string, `0x${string}`>();
+
+  groups.forEach((group) => {
+    group.forEach((address) => {
+      if (!isHexAddress(address)) return;
+      byLowercase.set(address.toLowerCase(), address);
+    });
+  });
+
+  return Array.from(byLowercase.values());
 }
 
 function agentStatusesLogKey(statuses: AgentStatus[]) {
@@ -134,6 +154,18 @@ function ensNameFromAgentStatus(status: AgentStatus | undefined) {
   return ensNameFromAgentLabel(label);
 }
 
+function bigintFromAgentIdValue(value: unknown) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value);
+  return undefined;
+}
+
+function agentIdFromAgentStatus(status: AgentStatus | undefined) {
+  const payload = unknownRecord(status?.payload);
+  return bigintFromAgentIdValue(payload?.agentId ?? payload?.agent_id ?? payload?.erc8004AgentId);
+}
+
 function ensNameFromAgentId(agentId: bigint | undefined) {
   if (!agentId || agentId === 0n) return undefined;
   const numericId = Number(agentId);
@@ -167,15 +199,22 @@ function ensNameFromAgentLabel(label: string | undefined) {
 function agentDisplayName(
   agentAddress: `0x${string}` | undefined,
   statusByAgentAddress: ReadonlyMap<string, AgentStatus>,
-  profileByAddress: ReadonlyMap<string, { agentId: bigint; ensName?: string }>,
+  profileByAddress: ReadonlyMap<string, DaioReviewerProfile>,
+  profileByAgentId: ReadonlyMap<string, DaioReviewerProfile>,
+  fallbackProfile?: DaioReviewerProfile,
 ) {
-  if (!agentAddress) return undefined;
+  if (!agentAddress) return fallbackProfile?.ensName ?? ensNameFromAgentId(fallbackProfile?.agentId);
 
   const lowercaseAddress = agentAddress.toLowerCase();
-  const profile = profileByAddress.get(lowercaseAddress);
+  const status = statusByAgentAddress.get(lowercaseAddress);
+  const profile =
+    profileByAddress.get(lowercaseAddress) ??
+    profileByAgentId.get(agentIdFromAgentStatus(status)?.toString() ?? '') ??
+    fallbackProfile;
+
   return (
-    ensNameFromAgentStatus(statusByAgentAddress.get(lowercaseAddress)) ??
     profile?.ensName ??
+    ensNameFromAgentStatus(status) ??
     ensNameFromAgentId(profile?.agentId)
   );
 }
@@ -197,6 +236,42 @@ function activeAgentStatusAddresses(statuses: AgentStatus[]) {
 
 function numberFromContractScore(value: bigint) {
   return Number(value);
+}
+
+function numberFromContractUint(value: bigint | undefined, fallback = 0) {
+  if (value === undefined) return fallback;
+  return Number(value);
+}
+
+function auditReportQuorumFromDaio(daioData: DaioData) {
+  const configQuorum = daioData.requestConfig?.auditRevealQuorum;
+  if (configQuorum && configQuorum > 0n) {
+    return Math.max(AUDIT_QUORUM, numberFromContractUint(configQuorum, AUDIT_QUORUM));
+  }
+
+  const phase = daioData.requestPhase;
+  if (
+    phase &&
+    (phase.status === STATUS_AUDIT_COMMIT || phase.status === STATUS_AUDIT_REVEAL) &&
+    phase.quorum > 0n
+  ) {
+    return Math.max(AUDIT_QUORUM, numberFromContractUint(phase.quorum, AUDIT_QUORUM));
+  }
+
+  return AUDIT_QUORUM;
+}
+
+function auditReportCountFromDaio(daioData: DaioData) {
+  if (daioData.auditReportCount > 0) return daioData.auditReportCount;
+
+  const lifecycleStatus = daioData.requestLifecycle?.status ?? daioData.latestRequestStatus;
+  const revealCount = daioData.requestLifecycle?.auditRevealCount ?? 0n;
+  const revealQuorum = daioData.requestConfig?.auditRevealQuorum ?? 0n;
+  if (lifecycleStatus >= STATUS_FINALIZED || (revealQuorum > 0n && revealCount >= revealQuorum)) {
+    return AUDIT_QUORUM;
+  }
+
+  return 0;
 }
 
 function simulationPhaseFromContractStatus(status: number, daioData: DaioData): SimulationPhase {
@@ -1000,6 +1075,7 @@ export default function App() {
   const [roundResultHoldRound, setRoundResultHoldRound] = useState<1 | 2 | 3 | null>(null);
   const [roundProcessStartDelayMs, setRoundProcessStartDelayMs] = useState(0);
   const [isNodeSelectionReady, setIsNodeSelectionReady] = useState(false);
+  const [visibleChainAuditCount, setVisibleChainAuditCount] = useState(0);
   const [reviewRoundState, setReviewRoundState] = useState<ReviewRoundState | null>(null);
   const nodeChat = useNodeChat(evaluationId);
   const charactersRef = useRef(characters);
@@ -1015,6 +1091,7 @@ export default function App() {
   const lastContractRequestIdRef = useRef<string | null>(null);
   const lastAgentStatusLogKeyRef = useRef('');
   const contractSelectionAnimatedRequestRef = useRef<string | null>(null);
+  const selectedCharacterIdsByRequestRef = useRef<Record<string, string[]>>({});
   const contractMotionRoundsRef = useRef<Record<string, boolean>>({});
   const appliedContractRoundsRef = useRef<Record<1 | 2 | 3, boolean>>({
     1: false,
@@ -1059,8 +1136,33 @@ export default function App() {
     roomReviewBounty?.requestId ??
     (hasActiveOnChainRequest ? daioData.latestRequestId.toString() : null);
   const isContractDrivenReview = Boolean(activeAgentStatusRequestId);
+  const chainAuditQuorum = auditReportQuorumFromDaio(daioData);
+  const chainAuditReportTargetCount = Math.min(
+    chainAuditQuorum,
+    auditReportCountFromDaio(daioData),
+  );
+  const displayedChainAuditCount = Math.min(visibleChainAuditCount, chainAuditQuorum);
+  const auditQuorumDisplayReady =
+    !isContractDrivenReview ||
+    chainAuditReportTargetCount < chainAuditQuorum ||
+    displayedChainAuditCount >= chainAuditQuorum;
   const agentStatusSyncKey = agentStatusesLogKey(agentStatuses);
-  const chainParticipantsKey = `${daioData.reviewParticipants.join(',')}|${daioData.auditParticipants.join(',')}`;
+  const chainParticipantsKey = [
+    daioData.reviewCommitters.join(','),
+    daioData.revealedReviewers.join(','),
+    daioData.reviewParticipants.join(','),
+    daioData.auditParticipants.join(','),
+  ].join('|');
+  const chainAuditProgressKey = [
+    daioData.requestPhase?.status ?? '',
+    daioData.requestPhase?.count ?? '',
+    daioData.requestPhase?.quorum ?? '',
+    daioData.requestLifecycle?.auditCommitCount ?? '',
+    daioData.requestLifecycle?.auditRevealCount ?? '',
+    daioData.auditReportCount,
+    daioData.requestConfig?.auditRevealQuorum ?? '',
+    displayedChainAuditCount,
+  ].map(String).join('|');
   const chainRoundAggregateKey = [
     daioData.roundAggregates.review.score,
     daioData.roundAggregates.review.totalWeight,
@@ -1090,10 +1192,16 @@ export default function App() {
   ].map(String).join(':')).join('|');
   const chainReviewerProfileKey = daioData.reviewerProfiles.map((profile) => [
     profile.address,
+    profile.ensName ?? '',
     profile.agentId,
     profile.registered,
     profile.active,
     profile.suspended,
+    profile.reputation.samples,
+    profile.reputation.reportQuality,
+    profile.reputation.auditReliability,
+    profile.reputation.finalContribution,
+    profile.reputation.protocolCompliance,
   ].map(String).join(':')).join('|');
   const activeReviewRoundState = useMemo(
     () => reviewRoundState ? { ...reviewRoundState, phase: reviewGamePhaseFromSimulation(phase) } : null,
@@ -1135,12 +1243,47 @@ export default function App() {
   const showNodeReputationPanel = !showAuditQuorumTracker;
 
   useEffect(() => {
+    if (!isContractDrivenReview || !activeAgentStatusRequestId) {
+      if (visibleChainAuditCount !== 0) setVisibleChainAuditCount(0);
+      return undefined;
+    }
+
+    const targetCount = chainAuditReportTargetCount;
+    if (visibleChainAuditCount > targetCount) {
+      setVisibleChainAuditCount(targetCount);
+      return undefined;
+    }
+
+    if (!showAuditQuorumTracker || visibleChainAuditCount >= targetCount) return undefined;
+
+    const revealDelay = visibleChainAuditCount === 0
+      ? roundProcessStartDelayMs + FLOW_REVEAL_INITIAL_DELAY_MS
+      : FLOW_REVEAL_STEP_MS;
+    const timer = window.setTimeout(() => {
+      setVisibleChainAuditCount((current) => Math.min(current + 1, targetCount));
+    }, revealDelay);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    activeAgentStatusRequestId,
+    chainAuditReportTargetCount,
+    isContractDrivenReview,
+    roundProcessStartDelayMs,
+    showAuditQuorumTracker,
+    visibleChainAuditCount,
+  ]);
+
+  useEffect(() => {
     charactersRef.current = characters;
   }, [characters]);
 
   useEffect(() => {
     reviewRoundStateRef.current = reviewRoundState;
   }, [reviewRoundState]);
+
+  useEffect(() => {
+    setVisibleChainAuditCount(0);
+  }, [activeAgentStatusRequestId]);
 
   useEffect(() => {
     activeConversationsRef.current = activeConversations;
@@ -1260,7 +1403,7 @@ export default function App() {
 
     const requestStatus = daioData.requestLifecycle?.status ?? daioData.latestRequestStatus;
     const requestStatusName = daioData.requestLifecycle?.statusName ?? daioData.latestRequestStatusName;
-    const nextRound = currentRoundFromContractStatus(requestStatus);
+    let nextRound = currentRoundFromContractStatus(requestStatus);
     const statusKey = `${activeAgentStatusRequestId}:${requestStatus}:${daioData.requestAttempt.toString()}`;
     const round2MotionKey = `${activeAgentStatusRequestId}:2`;
     const round3MotionKey = `${activeAgentStatusRequestId}:3`;
@@ -1275,6 +1418,10 @@ export default function App() {
       finalizedContractRequestRef.current = null;
       contractSelectionAnimatedRequestRef.current = null;
       contractMotionRoundsRef.current = {};
+      selectedCharacterIdsByRequestRef.current = {
+        ...selectedCharacterIdsByRequestRef.current,
+        [activeAgentStatusRequestId]: [],
+      };
       lastAgentStatusLogKeyRef.current = '';
       lastContractStatusKeyRef.current = '';
       selectionCompletionLoggedRef.current = false;
@@ -1283,8 +1430,14 @@ export default function App() {
       setRoundIntro(null);
       setPendingDiscussionAdvanceRound(null);
       setIsNodeSelectionReady(false);
+      setVisibleChainAuditCount(0);
       addLog(`Tracking on-chain request #${activeAgentStatusRequestId}. Waiting for contract state changes.`);
     }
+
+    const shouldHoldForAuditReveal =
+      requestStatus >= STATUS_FINALIZED &&
+      chainAuditReportTargetCount >= chainAuditQuorum &&
+      !auditQuorumDisplayReady;
 
     if (requestStatus >= 2 && requestStatus <= 3 && !selectionAlreadyAnimated) {
       nextPhase = 'SELECTION';
@@ -1304,6 +1457,11 @@ export default function App() {
       !round2MotionAlreadyPlayed
     ) {
       nextPhase = 'ROUND_2_STARTING';
+    } else if (shouldHoldForAuditReveal) {
+      nextRound = 2;
+      nextPhase = round2MotionAlreadyPlayed || phase === 'ROUND_2'
+        ? 'ROUND_2'
+        : 'ROUND_2_STARTING';
     } else if (
       requestStatus >= 6 &&
       round3MotionAlreadyPlayed &&
@@ -1345,34 +1503,85 @@ export default function App() {
       ? charactersRef.current
       : buildAICharactersForRoom(selectedRoom).map(resetCharacter);
     const activeApiAgentAddresses = activeAgentStatusAddresses(agentStatuses);
-    const apiAgentAddresses = (activeApiAgentAddresses.length > 0 ? activeApiAgentAddresses : agentStatuses
+    const apiAgentAddresses = agentStatuses
       .map((status) => status.agent)
-      .filter(isHexAddress));
+      .filter(isHexAddress);
     const chainSnapshots = daioData.reviewerRoundSnapshots;
     const statusByAgentAddress = agentStatusByAddress(agentStatuses);
     const profileByAddress = new Map(daioData.reviewerProfiles.map((profile) => [profile.address.toLowerCase(), profile]));
-    const registeredReviewerAddresses = daioData.registeredReviewerProfiles.map((profile) => profile.address);
-    const chainOrApiAddresses = chainSnapshots.length > 0
-      ? chainSnapshots.map((snapshot) => snapshot.address)
-      : daioData.reviewParticipants.length > 0
-        ? [...daioData.reviewParticipants]
-        : apiAgentAddresses;
-    const candidateAgentAddresses = chainOrApiAddresses.length > 0
-      ? chainOrApiAddresses
-      : registeredReviewerAddresses;
-    const observedParticipantCount = Math.max(
-      daioData.reviewParticipants.length,
-      daioData.reviewerRoundSnapshots.length,
-      activeApiAgentAddresses.length,
+    const profileByAgentId = new Map(
+      daioData.reviewerProfiles
+        .filter((profile) => profile.agentId !== 0n)
+        .map((profile) => [profile.agentId.toString(), profile]),
     );
-    const selectedCount = Math.min(
-      currentCharacters.length,
-      observedParticipantCount > 0 ? observedParticipantCount : CONTRACT_EXPECTED_REVIEWER_COUNT,
+    const registeredReviewerProfiles = daioData.registeredReviewerProfiles;
+    const registeredReviewerAddresses = registeredReviewerProfiles.map((profile) => profile.address);
+    const chainSelectedAgentAddresses = uniqueHexAddresses([
+      daioData.reviewCommitters,
+      daioData.revealedReviewers,
+      daioData.reviewParticipants,
+      chainSnapshots.map((snapshot) => snapshot.address),
+    ]);
+    const selectedAgentAddresses = chainSelectedAgentAddresses.length > 0
+      ? chainSelectedAgentAddresses
+      : activeApiAgentAddresses;
+    const selectedAgentAddressSet = new Set(selectedAgentAddresses.map((address) => address.toLowerCase()));
+    const fallbackAgentAddresses = registeredReviewerAddresses.length > 0
+      ? registeredReviewerAddresses
+      : apiAgentAddresses;
+    const fallbackSelectedCount = requestStatus >= 2
+      ? Math.min(currentCharacters.length, CONTRACT_EXPECTED_REVIEWER_COUNT)
+      : 0;
+    const profileForCharacter = (index: number, agentAddress: `0x${string}` | undefined) => (
+      (agentAddress ? profileByAddress.get(agentAddress.toLowerCase()) : undefined) ??
+      registeredReviewerProfiles[index]
     );
+    let lockedSelectedIds = selectedCharacterIdsByRequestRef.current[activeAgentStatusRequestId] ?? [];
+    if (lockedSelectedIds.length === 0 && requestStatus >= 2) {
+      const currentSelectedIds = currentCharacters
+        .filter((character) => character.selected)
+        .map((character) => character.id);
+      const registrySelectedIds = selectedAgentAddresses
+        .map((address) => {
+          const rosterIndex = registeredReviewerAddresses.findIndex(
+            (reviewerAddress) => reviewerAddress.toLowerCase() === address.toLowerCase(),
+          );
+          return rosterIndex >= 0 ? currentCharacters[rosterIndex]?.id : undefined;
+        })
+        .filter((id): id is string => Boolean(id));
+      const initialSelectedIds = currentSelectedIds.length >= CONTRACT_EXPECTED_REVIEWER_COUNT
+        ? currentSelectedIds
+        : registrySelectedIds.length >= CONTRACT_EXPECTED_REVIEWER_COUNT
+          ? registrySelectedIds
+          : currentCharacters.slice(0, fallbackSelectedCount).map((character) => character.id);
+
+      lockedSelectedIds = initialSelectedIds.slice(0, CONTRACT_EXPECTED_REVIEWER_COUNT);
+      selectedCharacterIdsByRequestRef.current = {
+        ...selectedCharacterIdsByRequestRef.current,
+        [activeAgentStatusRequestId]: lockedSelectedIds,
+      };
+    }
+
+    const lockedSelectedIdSet = new Set(lockedSelectedIds);
+    const selectedSlotByCharacterId = new Map(lockedSelectedIds.map((id, index) => [id, index]));
+    const standbyAgentAddresses = fallbackAgentAddresses.filter(
+      (address) => !selectedAgentAddressSet.has(address.toLowerCase()),
+    );
+    let standbyAgentIndex = 0;
     const nextCharacters = currentCharacters.map((character, index) => {
-      const selected = index < selectedCount;
-      const agentAddress = candidateAgentAddresses[index] ?? character.agentAddress;
-      const displayName = agentDisplayName(agentAddress, statusByAgentAddress, profileByAddress);
+      const selectedSlot = selectedSlotByCharacterId.get(character.id);
+      const selected = lockedSelectedIdSet.has(character.id);
+      const agentAddress = selected
+        ? selectedAgentAddresses[selectedSlot ?? index] ?? character.agentAddress ?? fallbackAgentAddresses[index]
+        : standbyAgentAddresses[standbyAgentIndex++] ?? character.agentAddress ?? fallbackAgentAddresses[index];
+      const fallbackProfile = profileForCharacter(index, agentAddress);
+      const displayName = agentDisplayName(
+        agentAddress,
+        statusByAgentAddress,
+        profileByAddress,
+        profileByAgentId,
+        fallbackProfile,
+      );
       return {
         ...character,
         agentAddress,
@@ -1384,14 +1593,28 @@ export default function App() {
     });
     const reviewCharacters = getSelectedReviewNodes(nextCharacters);
     const currentState = reviewRoundStateRef.current;
-    const baseState = !currentState || currentState.reviewers.length !== reviewCharacters.length
+    const reviewCharacterIds = reviewCharacters.map((reviewer) => reviewer.id).join('|');
+    const currentReviewerIds = currentState?.reviewers.map((reviewer) => reviewer.id).join('|') ?? '';
+    const baseState = !currentState ||
+      currentState.reviewers.length !== reviewCharacters.length ||
+      currentReviewerIds !== reviewCharacterIds
       ? createReviewRoundState(reviewCharacters)
       : currentState;
     const snapshots = snapshotByAddress(daioData);
     const patchedReviewers = baseState.reviewers.map((reviewer, index) => {
-      const agentAddress = chainSnapshots[index]?.address ?? reviewer.agentAddress ?? candidateAgentAddresses[index];
+      const agentAddress = reviewer.agentAddress ?? selectedAgentAddresses[index] ?? chainSnapshots[index]?.address;
       const snapshot = agentAddress ? snapshots.get(agentAddress.toLowerCase()) : chainSnapshots[index];
-      const displayName = agentDisplayName(agentAddress, statusByAgentAddress, profileByAddress);
+      const fallbackProfile = profileForCharacter(
+        currentCharacters.findIndex((character) => character.id === reviewer.id),
+        agentAddress,
+      );
+      const displayName = agentDisplayName(
+        agentAddress,
+        statusByAgentAddress,
+        profileByAddress,
+        profileByAgentId,
+        fallbackProfile,
+      );
       return applyContractSnapshotToReviewer(
         {
           ...reviewer,
@@ -1402,12 +1625,13 @@ export default function App() {
         displayName,
       );
     });
-    const contractAuditQuorum = daioData.roundAggregates.auditConsensus.closed && daioData.auditParticipants.length > 0
-      ? daioData.auditParticipants.length
-      : Math.max(AUDIT_QUORUM, daioData.auditParticipants.length);
+    const contractAuditQuorum = chainAuditQuorum;
+    const contractReviewPhase: ReviewGamePhase = shouldHoldForAuditReveal
+      ? 'round2'
+      : reviewPhaseFromContractStatus(requestStatus, daioData);
     const patchedState: ReviewRoundState = {
       ...baseState,
-      phase: reviewPhaseFromContractStatus(requestStatus, daioData),
+      phase: contractReviewPhase,
       selectedReviewerIds: patchedReviewers.map((reviewer) => reviewer.id),
       reviewers: patchedReviewers,
       round0ConsensusScore: daioData.roundAggregates.review.closed || daioData.roundAggregates.review.score > 0n
@@ -1420,7 +1644,7 @@ export default function App() {
         ? numberFromContractScore(daioData.roundAggregates.reputationFinal.score)
         : baseState.round2ConsensusScore,
       auditQuorum: contractAuditQuorum,
-      acceptedAuditCount: Math.min(contractAuditQuorum, daioData.auditParticipants.length),
+      acceptedAuditCount: Math.min(contractAuditQuorum, displayedChainAuditCount),
     };
 
     charactersRef.current = nextCharacters;
@@ -1451,6 +1675,8 @@ export default function App() {
   }, [
     activeAgentStatusRequestId,
     addLog,
+    auditQuorumDisplayReady,
+    chainAuditProgressKey,
     chainParticipantsKey,
     chainReviewerProfileKey,
     chainReviewerSnapshotKey,
@@ -1532,6 +1758,8 @@ export default function App() {
     setRoundResultHoldRound(null);
     setRoundProcessStartDelayMs(0);
     setIsNodeSelectionReady(false);
+    selectedCharacterIdsByRequestRef.current = {};
+    setVisibleChainAuditCount(0);
     selectionCompletionLoggedRef.current = false;
     setCharacters(buildAICharactersForRoom(roomId).map(resetCharacter));
   }, [clearMeetingTimers, clearRoundResultHoldTimer, selectedRoom]);
@@ -1680,7 +1908,7 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'SELECTION' || isNodeSelectionReady) return undefined;
 
-    const timer = window.setTimeout(completeNodeSelection, 1800);
+    const timer = window.setTimeout(completeNodeSelection, NODE_SELECTION_DRAW_MS);
     return () => window.clearTimeout(timer);
   }, [completeNodeSelection, isNodeSelectionReady, phase]);
 
@@ -1716,12 +1944,18 @@ export default function App() {
   }, [activeAgentStatusRequestId, isContractDrivenReview, isNodeSelectionReady, phase, queueRoundOneFromSelection]);
 
   useEffect(() => {
-    if (!isContractDrivenReview || !activeAgentStatusRequestId) return;
-    if (phase !== 'SELECTION' || !isNodeSelectionReady) return;
-    if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return;
+    if (!isContractDrivenReview || !activeAgentStatusRequestId) return undefined;
+    if (phase !== 'SELECTION' || !isNodeSelectionReady) return undefined;
+    if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return undefined;
 
-    contractSelectionAnimatedRequestRef.current = activeAgentStatusRequestId;
-    queueRoundOneFromSelection('chain');
+    const timer = window.setTimeout(() => {
+      if (contractSelectionAnimatedRequestRef.current === activeAgentStatusRequestId) return;
+
+      contractSelectionAnimatedRequestRef.current = activeAgentStatusRequestId;
+      queueRoundOneFromSelection('chain');
+    }, NODE_SELECTION_SELECTED_HOLD_MS);
+
+    return () => window.clearTimeout(timer);
   }, [
     activeAgentStatusRequestId,
     isContractDrivenReview,
@@ -1748,6 +1982,7 @@ export default function App() {
     setPhase('SELECTION');
     setCurrentRound(1);
     setIsNodeSelectionReady(false);
+    selectedCharacterIdsByRequestRef.current = {};
     selectionCompletionLoggedRef.current = false;
     setRoundIntro(null);
     setRoundResultHoldRound(null);
@@ -1760,6 +1995,7 @@ export default function App() {
     setSelectedThinkingNodeId(null);
     setPendingDiscussionAdvanceRound(null);
     setRoundProcessStartDelayMs(0);
+    setVisibleChainAuditCount(0);
     clearMeetingTimers();
     clearRoundResultHoldTimer();
     setMetConversationIds([]);
@@ -1973,6 +2209,7 @@ export default function App() {
   useEffect(() => {
     if (!isContractDrivenReview || !activeAgentStatusRequestId) return;
     if (!daioData.roundAggregates.reputationFinal.closed) return;
+    if (!auditQuorumDisplayReady) return;
     if (finalizedContractRequestRef.current === activeAgentStatusRequestId) return;
 
     const round3MotionKey = `${activeAgentStatusRequestId}:3`;
@@ -1997,6 +2234,7 @@ export default function App() {
     meetingTimersRef.current.push(timer);
   }, [
     activeAgentStatusRequestId,
+    auditQuorumDisplayReady,
     daioData.roundAggregates.reputationFinal.closed,
     finalizeScores,
     isContractDrivenReview,
@@ -2076,8 +2314,8 @@ export default function App() {
 
     if (round === 2) {
       const acceptedAudits = protocolState?.audits.filter((audit) => audit.status === 'accepted').sort((a, b) => a.arrivalOrder - b.arrivalOrder) ?? [];
-      const effectiveAuditQuorum = protocolState?.auditQuorum ?? AUDIT_QUORUM;
-      const chainAuditCount = isContractDrivenReview ? Math.min(effectiveAuditQuorum, daioData.auditParticipants.length) : undefined;
+      const effectiveAuditQuorum = isContractDrivenReview ? chainAuditQuorum : (protocolState?.auditQuorum ?? AUDIT_QUORUM);
+      const chainAuditCount = isContractDrivenReview ? Math.min(effectiveAuditQuorum, displayedChainAuditCount) : undefined;
       const visibleAcceptedAudits = chainAuditCount !== undefined
         ? acceptedAudits.slice(0, chainAuditCount)
         : acceptedAudits;
@@ -2158,7 +2396,7 @@ export default function App() {
       }, moveDuration + ROUND_MOVEMENT_SETTLE_MS);
       meetingTimersRef.current.push(timer);
     }
-  }, [addLog, clearMeetingTimers, daioData.auditParticipants.length, isContractDrivenReview, selectedRoom]);
+  }, [addLog, chainAuditQuorum, clearMeetingTimers, displayedChainAuditCount, isContractDrivenReview, selectedRoom]);
 
   const advanceFromRound2 = useCallback(() => {
     setPendingDiscussionAdvanceRound(null);
@@ -2284,6 +2522,8 @@ export default function App() {
     }
 
     if (phase === 'ROUND_2') {
+      if (isContractDrivenReview) return undefined;
+
       const timer = window.setTimeout(() => {
         if (selectedNodeIdRef.current || selectedConversationIdRef.current || selectedThinkingNodeIdRef.current) {
           setPendingDiscussionAdvanceRound(2);
@@ -2376,7 +2616,7 @@ export default function App() {
     <div className="relative h-screen w-full overflow-hidden bg-[#f2e7c9] font-pixel text-[#503521]">
       {page !== 'room' && page !== 'loading' && <Navbar activePage={page} onNavigate={handleNavigate} />}
 
-      {page === 'dashboard' && <DashboardPage />}
+      {page === 'dashboard' && <DashboardPage daioData={daioData} />}
       {page === 'commons' && (
         <CommonsPage
           onRoomSelected={startRoomSelection}
@@ -2681,7 +2921,7 @@ export default function App() {
                         quorum={activeReviewRoundState.auditQuorum}
                         isActive={showAuditQuorumTracker}
                         startDelayMs={roundProcessStartDelayMs}
-                        onChainAuditCount={isContractDrivenReview ? daioData.auditParticipants.length : undefined}
+                        onChainAuditCount={isContractDrivenReview ? displayedChainAuditCount : undefined}
                       />
                     )}
                     {showReputationWeightingPanel && activeReviewRoundState && (

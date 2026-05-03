@@ -148,6 +148,44 @@ export const DAIO_INFO_READER_ABI = [
     ],
   },
   {
+    name: 'requestConfig',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'requestId', type: 'uint256' }],
+    outputs: [
+      {
+        name: 'config',
+        type: 'tuple',
+        components: [
+          { name: 'reviewElectionDifficulty', type: 'uint16' },
+          { name: 'auditElectionDifficulty',  type: 'uint16' },
+          { name: 'reviewCommitQuorum',       type: 'uint16' },
+          { name: 'reviewRevealQuorum',       type: 'uint16' },
+          { name: 'auditCommitQuorum',        type: 'uint16' },
+          { name: 'auditRevealQuorum',        type: 'uint16' },
+          { name: 'auditTargetLimit',         type: 'uint16' },
+          { name: 'minIncomingAudit',         type: 'uint16' },
+          { name: 'auditCoverageQuorum',      type: 'uint16' },
+          { name: 'contributionThreshold',    type: 'uint16' },
+          { name: 'reviewEpochSize',          type: 'uint16' },
+          { name: 'auditEpochSize',           type: 'uint16' },
+          { name: 'finalityFactor',           type: 'uint16' },
+          { name: 'maxRetries',               type: 'uint16' },
+          { name: 'minorityThreshold',        type: 'uint16' },
+          { name: 'semanticStrikeThreshold',  type: 'uint16' },
+          { name: 'protocolFaultSlashBps',    type: 'uint16' },
+          { name: 'missedRevealSlashBps',     type: 'uint16' },
+          { name: 'semanticSlashBps',         type: 'uint16' },
+          { name: 'cooldownBlocks',           type: 'uint32' },
+          { name: 'reviewCommitTimeout',      type: 'uint32' },
+          { name: 'reviewRevealTimeout',      type: 'uint32' },
+          { name: 'auditCommitTimeout',       type: 'uint32' },
+          { name: 'auditRevealTimeout',       type: 'uint32' },
+        ],
+      },
+    ],
+  },
+  {
     name: 'requestParticipants',
     type: 'function',
     stateMutability: 'view',
@@ -155,6 +193,19 @@ export const DAIO_INFO_READER_ABI = [
     outputs: [
       { name: 'reviewCommitters', type: 'address[]' },
       { name: 'revealedReviewers', type: 'address[]' },
+    ],
+  },
+  {
+    name: 'auditTargets',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'requestId', type: 'uint256' },
+      { name: 'auditor',   type: 'address' },
+    ],
+    outputs: [
+      { name: 'submittedTargets', type: 'address[]' },
+      { name: 'canonicalTargets', type: 'address[]' },
     ],
   },
 ] as const;
@@ -352,7 +403,23 @@ export const REVIEWER_REGISTRY_ABI = [
       { name: 'semanticStrikes',    type: 'uint256' },
       { name: 'protocolFaults',     type: 'uint256' },
       { name: 'cooldownUntilBlock', type: 'uint256' },
+      { name: 'ensNode',            type: 'bytes32' },
+      { name: 'ensName',            type: 'string'  },
     ],
+  },
+  {
+    name: 'availableStake',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'reviewerAddress', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'lockedStake',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'reviewer', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
   },
 ] as const;
 
@@ -364,16 +431,44 @@ export const REPUTATION_LEDGER_ABI = [
     stateMutability: 'view',
     inputs: [{ name: 'reviewer', type: 'address' }],
     outputs: [
-      { name: 'score',       type: 'uint256' },
-      { name: 'sampleCount', type: 'uint256' },
+      { name: 'samples',            type: 'uint256' },
+      { name: 'reportQuality',      type: 'uint256' },
+      { name: 'auditReliability',   type: 'uint256' },
+      { name: 'finalContribution',  type: 'uint256' },
+      { name: 'protocolCompliance', type: 'uint256' },
     ],
   },
 ] as const;
 
-// ─── Uniswap V4 PoolManager ───────────────────────────────────────────────────
-// getSlot0 returns the current pool price as sqrtPriceX96.
+// ─── ERC-8004 Adapter ─────────────────────────────────────────────────────────
+export const ERC8004_ADAPTER_ABI = [
+  {
+    name: 'identityRegistry',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'reputationRegistry',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'agentWallet',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'agentId', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+] as const;
+
+// ─── Uniswap V4 StateView ─────────────────────────────────────────────────────
+// PoolManager owns state, but off-chain/frontends read pool state through StateView.
 // PoolId is bytes32 (the poolKeyHash from addresses.json).
-export const UNISWAP_V4_POOL_MANAGER_ABI = [
+export const UNISWAP_V4_STATE_VIEW_ABI = [
   {
     name: 'getSlot0',
     type: 'function',

@@ -12,11 +12,13 @@ import {
   DAIO_CORE_ABI,
   PAYMENT_ROUTER_ABI,
   USDAIO_ABI,
-  UNISWAP_V4_POOL_MANAGER_ABI,
+  UNISWAP_V4_STATE_VIEW_ABI,
   ROUND_LEDGER_ABI,
   COMMIT_REVEAL_ABI,
   REVIEWER_REGISTRY_ABI,
   DAIO_INFO_READER_ABI,
+  REPUTATION_LEDGER_ABI,
+  ERC8004_ADAPTER_ABI,
 } from '../../contracts/abis';
 
 const ADDR = ADDRESSES_JSON.sepolia;
@@ -28,6 +30,7 @@ export const CONTRACT_ADDRESSES = {
   usdaio:               ADDR.usdaio               as `0x${string}`,
   stakeVault:           ADDR.stakeVault            as `0x${string}`,
   uniswapV4PoolManager: ADDR.uniswapV4PoolManager  as `0x${string}`,
+  uniswapV4StateView:   ADDR.uniswapV4StateView    as `0x${string}`,
   poolKeyHash:          ADDR.pool.poolKeyHash       as `0x${string}`,
   poolFee:              ADDR.pool.fee,
   daioRoundLedger:      ADDR.daioRoundLedger        as `0x${string}`,
@@ -35,6 +38,7 @@ export const CONTRACT_ADDRESSES = {
   daioInfoReader:       ADDR.daioInfoReader         as `0x${string}`,
   reviewerRegistry:     ADDR.reviewerRegistry       as `0x${string}`,
   reputationLedger:     ADDR.reputationLedger       as `0x${string}`,
+  erc8004Adapter:        ADDR.erc8004Adapter         as `0x${string}`,
 } as const;
 
 /**
@@ -50,7 +54,7 @@ export const DAIO_SLOT = {
   USDAIO_ALLOWANCE:         2,
   /** USDAIO.decimals() → number */
   USDAIO_DECIMALS:          3,
-  /** PoolManager.getSlot0(poolKeyHash) → [sqrtPriceX96, tick, protocolFee, lpFee] */
+  /** StateView.getSlot0(poolKeyHash) → [sqrtPriceX96, tick, protocolFee, lpFee] */
   POOL_SLOT0:               4,
   /**
    * PaymentRouter.latestRequestState(wallet) → [requestId, status, processing, completed]
@@ -121,8 +125,8 @@ export function buildDaioContracts(
     },
     // slot 4 — always: Uniswap V4 pool sqrtPrice for live ETH/USDAIO rate
     {
-      address:      CONTRACT_ADDRESSES.uniswapV4PoolManager,
-      abi:          UNISWAP_V4_POOL_MANAGER_ABI,
+      address:      CONTRACT_ADDRESSES.uniswapV4StateView,
+      abi:          UNISWAP_V4_STATE_VIEW_ABI,
       functionName: 'getSlot0' as const,
       args:         [CONTRACT_ADDRESSES.poolKeyHash] as const,
     },
@@ -166,4 +170,14 @@ export function buildDaioContracts(
 export type DaioContracts = ReturnType<typeof buildDaioContracts>;
 
 // ─── Re-export ABI fragments for action hooks ─────────────────────────────────
-export { DAIO_CORE_ABI, PAYMENT_ROUTER_ABI, USDAIO_ABI, ROUND_LEDGER_ABI, COMMIT_REVEAL_ABI, REVIEWER_REGISTRY_ABI, DAIO_INFO_READER_ABI };
+export {
+  DAIO_CORE_ABI,
+  PAYMENT_ROUTER_ABI,
+  USDAIO_ABI,
+  ROUND_LEDGER_ABI,
+  COMMIT_REVEAL_ABI,
+  REVIEWER_REGISTRY_ABI,
+  DAIO_INFO_READER_ABI,
+  REPUTATION_LEDGER_ABI,
+  ERC8004_ADAPTER_ABI,
+};
