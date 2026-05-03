@@ -2,8 +2,12 @@
  * Thin client for the DAIO Content Service and MarkItDown API.
  *
  * Base URLs are read from Vite env vars:
- *   VITE_DAIO_API        — Content API  (e.g. http://35.169.55.219:18002)
- *   VITE_MARKITDOWN_API  — MarkItDown   (e.g. http://35.169.55.219:18003)
+ *   VITE_DAIO_API        — Content API  (e.g. http://api.opendaio.com)
+ *   VITE_MARKITDOWN_API  — MarkItDown   (e.g. http://markitdown.opendaio.com)
+ *
+ * The two host names are reverse-proxied to the agents stack:
+ *   api.opendaio.com:80         → localhost:18002 (content-service)
+ *   markitdown.opendaio.com:80  → localhost:18003 (markitdown)
  */
 
 import { keccak256 } from 'viem';

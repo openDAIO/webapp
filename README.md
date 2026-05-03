@@ -237,8 +237,8 @@ Defined in `.env` or `.env.local` (see `.env.example`).
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_DAIO_API` | Content Service base URL (e.g. `http://127.0.0.1:18002`). Drives request creation, document storage, agent status / reasons, and the `/ask` interview endpoint. |
-| `VITE_MARKITDOWN_API` | MarkItDown API base URL (e.g. `http://127.0.0.1:18003`). Used by the submission gate to convert PDF/DOCX uploads to Markdown. |
+| `VITE_DAIO_API` | Content Service base URL (production: `http://api.opendaio.com`, reverse-proxied to `localhost:18002`). Drives request creation, document storage, agent status / reasons, and the `/ask` interview endpoint. |
+| `VITE_MARKITDOWN_API` | MarkItDown API base URL (production: `http://markitdown.opendaio.com`, reverse-proxied to `localhost:18003`). Used by the submission gate to convert PDF/DOCX uploads to Markdown. |
 | `VITE_REOWN_PROJECT_ID` | Reown AppKit project ID for WalletConnect. |
 | `GEMINI_API_KEY` | Optional Gemini key. The live interview path uses the Content Service `/ask`; this is reserved as a fallback inside `services/nodeChatService.ts`. |
 | `APP_URL` | Self-URL for OAuth callbacks / share links. |
