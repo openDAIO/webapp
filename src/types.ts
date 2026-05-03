@@ -174,6 +174,10 @@ export interface NodeEvaluationResult {
   slashAmount: number;
   rewardAmount: number;
   bountyRewardAmount: number;
+  rewardSource?: 'frontend' | 'chain';
+  protocolFault?: boolean;
+  semanticFault?: boolean;
+  slashCount?: number;
   status: NodeEvaluationStatus;
   finalReasoning: string;
   roundHistory: RoundEvaluationHistory[];
@@ -192,6 +196,12 @@ export interface FinalEvaluationSummary {
   reviewBountyAmount: number;
   bountyPerEligibleNode: number;
   bountyAsset: 'USDAIO';
+  rewardSource?: 'frontend' | 'chain';
+  rewardPoolAmount?: number;
+  protocolFeeAmount?: number;
+  totalRewardPaidAmount?: number;
+  treasuryRemainderAmount?: number;
+  treasuryAccrualAmount?: number;
   completedAt?: string;
 }
 

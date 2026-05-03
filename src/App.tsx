@@ -89,6 +89,8 @@ const NODE_SELECTION_SELECTED_HOLD_MS = 2200;
 const STATUS_AUDIT_COMMIT = 4;
 const STATUS_AUDIT_REVEAL = 5;
 const STATUS_FINALIZED = 6;
+const CONTRACT_BPS = 10_000n;
+const CONTRACT_PROTOCOL_FEE_BPS = 1_000n;
 
 function logReview(event: string, payload: Record<string, unknown>) {
   console.debug(`${REVIEW_LOG_PREFIX} ${event}`, payload);
@@ -234,6 +236,41 @@ function numberFromContractScore(value: bigint) {
 function numberFromContractUint(value: bigint | undefined, fallback = 0) {
   if (value === undefined) return fallback;
   return Number(value);
+}
+
+function numberFromTokenAmount(value: bigint | undefined, decimals = 18) {
+  if (value === undefined) return 0;
+  const divisor = 10n ** BigInt(decimals > 0 ? decimals : 18);
+  const whole = value / divisor;
+  const fraction = value % divisor;
+  return Number(whole) + Number(fraction) / Number(divisor);
+}
+
+function contractFeeBreakdown(lifecycle: DaioData['requestLifecycle']) {
+  if (!lifecycle) {
+    return {
+      feePaid: 0n,
+      rewardPool: 0n,
+      protocolFee: 0n,
+    };
+  }
+
+  const feePaid = lifecycle.feePaid;
+  let rewardPool = lifecycle.rewardPool;
+  let protocolFee = lifecycle.protocolFee;
+
+  // DAIOCore zeroes rewardPool/protocolFee after closeRequestToTreasury().
+  // Reconstruct them from feePaid so the final screen can still show policy accounting.
+  if (feePaid > 0n && rewardPool === 0n && protocolFee === 0n) {
+    protocolFee = (feePaid * CONTRACT_PROTOCOL_FEE_BPS) / CONTRACT_BPS;
+    rewardPool = feePaid - protocolFee;
+  }
+
+  return {
+    feePaid,
+    rewardPool,
+    protocolFee,
+  };
 }
 
 function auditReportQuorumFromDaio(daioData: DaioData) {
@@ -592,6 +629,7 @@ function buildEvaluationReport({
   reviewBounty: ConfirmedReviewBounty | null;
 }) {
   const { summary, nodes } = finalResult;
+  const stakeAsset = summary.rewardSource === 'chain' ? summary.bountyAsset : 'TOK';
   const lines: string[] = [
     '# PixelReview Evaluation Report',
     '',
@@ -606,9 +644,12 @@ function buildEvaluationReport({
     `- Standard Deviation: ${formatReportAmount(summary.standardDeviation, 2)}`,
     `- Accepted Range: ${formatReportAmount(summary.outlierThresholdLow, 1)} - ${formatReportAmount(summary.outlierThresholdHigh, 1)}`,
     `- Bounty Winners: ${summary.eligibleNodeCount} / ${nodes.length}`,
-    `- Bounty Per Winner: ${formatReportAmount(summary.bountyPerEligibleNode, 2)} ${summary.bountyAsset}`,
-    `- Review Bounty Pool: ${formatReportAmount(summary.reviewBountyAmount, 2)} ${summary.bountyAsset}`,
-    `- Slashed Stake Pool: ${formatReportAmount(summary.totalSlashedPool, 2)} TOK`,
+    `- Reward Source: ${summary.rewardSource === 'chain' ? 'Contract accounting' : 'Frontend simulation'}`,
+    `- Reward Pool: ${formatReportAmount(summary.rewardPoolAmount ?? summary.reviewBountyAmount, 2)} ${summary.bountyAsset}`,
+    `- Protocol Fee: ${formatReportAmount(summary.protocolFeeAmount ?? 0, 2)} ${summary.bountyAsset}`,
+    `- Rewards Paid: ${formatReportAmount(summary.totalRewardPaidAmount ?? nodes.reduce((sum, node) => sum + node.rewardAmount, 0), 2)} ${summary.bountyAsset}`,
+    `- Slashed Stake Pool: ${formatReportAmount(summary.totalSlashedPool, 2)} ${stakeAsset}`,
+    `- Treasury Accrual: ${formatReportAmount(summary.treasuryAccrualAmount ?? 0, 2)} ${summary.bountyAsset}`,
   ];
 
   if (reviewBounty) {
@@ -626,11 +667,11 @@ function buildEvaluationReport({
     '',
     '## Node Results',
     '',
-    '| Node | Final Score | Status | Reputation | Stake | Bounty | Stake Change |',
+    '| Node | Final Score | Status | Reputation | Stake | Reward | Slash |',
     '| --- | ---: | --- | ---: | ---: | ---: | ---: |',
     ...nodes.map((node) => {
-      const stakeChange = node.rewardAmount - node.slashAmount;
-      return `| ${node.name} | ${node.finalScore} | ${node.status} | ${node.reputationBefore} -> ${node.reputationAfter} | ${formatReportAmount(node.stakeAmount, 1)} TOK | ${formatReportAmount(node.bountyRewardAmount, 2)} ${summary.bountyAsset} | ${formatReportAmount(stakeChange, 1)} TOK |`;
+      const displayedReward = summary.rewardSource === 'chain' ? node.rewardAmount : node.bountyRewardAmount;
+      return `| ${node.name} | ${node.finalScore} | ${node.status} | ${node.reputationBefore} -> ${node.reputationAfter} | ${formatReportAmount(node.stakeAmount, 1)} ${stakeAsset} | ${formatReportAmount(displayedReward, 2)} ${summary.bountyAsset} | ${formatReportAmount(node.slashAmount, 2)} ${stakeAsset} |`;
     }),
     '',
     '## Node Review History',
@@ -1071,6 +1112,7 @@ export default function App() {
   const [visibleChainAuditCount, setVisibleChainAuditCount] = useState(0);
   const [reviewRoundState, setReviewRoundState] = useState<ReviewRoundState | null>(null);
   const nodeChat = useNodeChat(evaluationId);
+  const daioDataRef = useRef(daioData);
   const charactersRef = useRef(characters);
   const reviewRoundStateRef = useRef<ReviewRoundState | null>(reviewRoundState);
   const activeConversationsRef = useRef(activeConversations);
@@ -1183,6 +1225,9 @@ export default function App() {
     snapshot.reputationFinal.reputationScore,
     snapshot.finalAccounting.reward,
     snapshot.finalAccounting.slashed,
+    snapshot.finalAccounting.slashCount,
+    snapshot.finalAccounting.protocolFault,
+    snapshot.finalAccounting.semanticFault,
   ].map(String).join(':')).join('|');
   const chainReviewerProfileKey = daioData.reviewerProfiles.map((profile) => [
     profile.address,
@@ -1266,6 +1311,10 @@ export default function App() {
     showAuditQuorumTracker,
     visibleChainAuditCount,
   ]);
+
+  useEffect(() => {
+    daioDataRef.current = daioData;
+  }, [daioData]);
 
   useEffect(() => {
     charactersRef.current = characters;
@@ -1481,7 +1530,7 @@ export default function App() {
 
     if (!roomReviewBounty && daioData.requestLifecycle) {
       setRoomReviewBounty({
-        amount: Number(daioData.requestLifecycle.feePaid / 10n ** 16n) / 100,
+        amount: numberFromTokenAmount(daioData.requestLifecycle.feePaid, daioData.usdaioDecimals),
         asset: 'USDAIO',
         network: 'Ethereum Sepolia',
         txHash: '',
@@ -1674,6 +1723,7 @@ export default function App() {
     daioData.requestLifecycle?.statusName,
     daioData.requestLifecycle?.feePaid,
     daioData.requestLifecycle?.retryCount,
+    daioData.usdaioDecimals,
     phase,
     isContractDrivenReview,
     roomReviewBounty,
@@ -2092,6 +2142,7 @@ export default function App() {
   }, [addLog]);
 
   const finalizeScores = useCallback(() => {
+    const daioSnapshot = daioDataRef.current;
     const activeCharacters = getReviewParticipants(charactersRef.current);
     const activeCharacterIds = new Set(activeCharacters.map((character) => character.id));
     const finalPositionById = new Map(activeCharacters.map((character) => [character.id, character.idlePosition]));
@@ -2099,6 +2150,8 @@ export default function App() {
     const protocolState = reviewRoundStateRef.current;
     const protocolReviewerById = new Map(protocolState?.reviewers.map((reviewer) => [reviewer.id, reviewer]) ?? []);
     const calculated = buildNodeResultRows(roomFinalInputs, undefined, roomReviewBounty?.amount ?? 0);
+    const chainSnapshotByAddress = snapshotByAddress(daioSnapshot);
+    const shouldUseChainAccounting = isContractDrivenReview && daioSnapshot.roundAggregates.reputationFinal.closed;
 
     if (protocolState?.round2ConsensusScore !== undefined) {
       const finalConsensusForChart = scoreScaleToChart(protocolState.round2ConsensusScore);
@@ -2108,14 +2161,83 @@ export default function App() {
       calculated.nodes = calculated.nodes.map((node) => {
         const reviewNode = protocolReviewerById.get(node.id);
         if (!reviewNode) return node;
+        const snapshot = reviewNode.agentAddress
+          ? chainSnapshotByAddress.get(reviewNode.agentAddress.toLowerCase())
+          : undefined;
+        const accounting = snapshot?.finalAccounting;
+        const chainRewardAmount = shouldUseChainAccounting
+          ? numberFromTokenAmount(accounting?.reward, daioSnapshot.usdaioDecimals)
+          : node.rewardAmount;
+        const chainSlashAmount = shouldUseChainAccounting
+          ? numberFromTokenAmount(accounting?.slashed, daioSnapshot.usdaioDecimals)
+          : node.slashAmount;
+        const slashCount = shouldUseChainAccounting ? Number(accounting?.slashCount ?? 0n) : undefined;
+        const protocolFault = shouldUseChainAccounting ? accounting?.protocolFault ?? false : undefined;
+        const semanticFault = shouldUseChainAccounting ? accounting?.semanticFault ?? false : undefined;
+        const hasFault = Boolean(protocolFault || semanticFault || (slashCount ?? 0) > 0);
+        const status = shouldUseChainAccounting
+          ? chainSlashAmount > 0 || hasFault
+            ? 'slashed'
+            : chainRewardAmount > 0
+              ? 'rewarded'
+              : 'within_range'
+          : node.status;
+        const stakeAmount = shouldUseChainAccounting && snapshot?.profile?.stake !== undefined
+          ? numberFromTokenAmount(snapshot.profile.stake, daioSnapshot.usdaioDecimals)
+          : node.stakeAmount;
+        const chainFaultNote = [
+          protocolFault ? 'protocolFault=true: reward is forced to 0 and 5% slash policy can apply' : null,
+          semanticFault ? 'semanticFault=true: semantic strike accounting was recorded' : null,
+        ].filter(Boolean).join('; ');
 
         return {
           ...node,
           finalScore: scoreScaleToChart(reviewNode.round2?.weightedScore ?? node.finalScore * 100),
-          finalReasoning: `${node.name} contributed proposalScore ${reviewNode.proposalScore}/10000 with finalWeight ${reviewNode.round2?.finalWeight ?? 0}/10000. Final consensus is ${protocolState.round2ConsensusScore}/10000 (${finalConsensusForChart}/100).`,
+          reputationAfter: reviewNode.round2?.reputationScore !== undefined
+            ? scoreScaleToChart(reviewNode.round2.reputationScore)
+            : node.reputationAfter,
+          stakeAmount,
+          isOutlier: shouldUseChainAccounting ? chainSlashAmount > 0 || hasFault : node.isOutlier,
+          slashAmount: shouldUseChainAccounting ? chainSlashAmount : node.slashAmount,
+          rewardAmount: shouldUseChainAccounting ? chainRewardAmount : node.rewardAmount,
+          bountyRewardAmount: shouldUseChainAccounting ? chainRewardAmount : node.bountyRewardAmount,
+          rewardSource: shouldUseChainAccounting ? 'chain' : node.rewardSource,
+          protocolFault,
+          semanticFault,
+          slashCount,
+          status,
+          finalReasoning: shouldUseChainAccounting
+            ? `${node.name} used proposalScore ${reviewNode.proposalScore}/10000, audit contribution weight ${reviewNode.round1?.reviewerWeight ?? 0}/10000, and reputation-adjusted finalWeight ${reviewNode.round2?.finalWeight ?? 0}/10000. Contract reward = rewardPool * finalWeight / sum(finalWeight), paid ${chainRewardAmount.toFixed(2)} USDAIO, slashed ${chainSlashAmount.toFixed(2)} USDAIO.${chainFaultNote ? ` ${chainFaultNote}.` : ''} Final consensus is ${protocolState.round2ConsensusScore}/10000 (${finalConsensusForChart}/100).`
+            : `${node.name} contributed proposalScore ${reviewNode.proposalScore}/10000 with finalWeight ${reviewNode.round2?.finalWeight ?? 0}/10000. Final consensus is ${protocolState.round2ConsensusScore}/10000 (${finalConsensusForChart}/100).`,
           reviewNode,
         };
       });
+    }
+
+    if (shouldUseChainAccounting) {
+      const { feePaid, rewardPool, protocolFee } = contractFeeBreakdown(daioSnapshot.requestLifecycle);
+      const feePaidAmount = numberFromTokenAmount(feePaid, daioSnapshot.usdaioDecimals);
+      const rewardPoolAmount = numberFromTokenAmount(rewardPool, daioSnapshot.usdaioDecimals);
+      const protocolFeeAmount = numberFromTokenAmount(protocolFee, daioSnapshot.usdaioDecimals);
+      const totalRewardPaidAmount = calculated.nodes.reduce((sum, node) => sum + node.rewardAmount, 0);
+      const totalSlashedPool = calculated.nodes.reduce((sum, node) => sum + node.slashAmount, 0);
+      const treasuryRemainderAmount = Math.max(0, rewardPoolAmount - totalRewardPaidAmount);
+      const eligibleNodeCount = calculated.nodes.filter((node) => node.rewardAmount > 0).length;
+
+      calculated.summary = {
+        ...calculated.summary,
+        rewardSource: 'chain',
+        reviewBountyAmount: rewardPoolAmount || Math.max(0, feePaidAmount - protocolFeeAmount),
+        rewardPoolAmount,
+        protocolFeeAmount,
+        totalRewardPaidAmount,
+        totalSlashedPool,
+        eligibleNodeCount,
+        redistributionPerNode: 0,
+        bountyPerEligibleNode: eligibleNodeCount > 0 ? totalRewardPaidAmount / eligibleNodeCount : 0,
+        treasuryRemainderAmount,
+        treasuryAccrualAmount: treasuryRemainderAmount + protocolFeeAmount + totalSlashedPool,
+      };
     }
 
     setFinalResult(calculated);
@@ -2147,7 +2269,7 @@ export default function App() {
           position: finalPositionById.get(character.id) ?? character.idlePosition,
           isOutlier: result.isOutlier,
           lastScore: result.finalScore,
-          stakeAmount: result.stakeAmount + result.rewardAmount - result.slashAmount,
+          stakeAmount: Math.max(0, result.stakeAmount + (result.rewardSource === 'chain' ? -result.slashAmount : result.rewardAmount - result.slashAmount)),
           reputationScore: result.reputationAfter,
         };
       }),
@@ -2161,6 +2283,11 @@ export default function App() {
       finalAverage100: calculated.summary.finalAverage,
       standardDeviation: calculated.summary.standardDeviation,
       eligibleNodeCount: calculated.summary.eligibleNodeCount,
+      rewardSource: calculated.summary.rewardSource,
+      rewardPoolAmount: calculated.summary.rewardPoolAmount,
+      protocolFeeAmount: calculated.summary.protocolFeeAmount,
+      totalRewardPaidAmount: calculated.summary.totalRewardPaidAmount,
+      treasuryAccrualAmount: calculated.summary.treasuryAccrualAmount,
       nodes: calculated.nodes.map((node) => ({
         id: node.id,
         name: node.name,
@@ -2168,10 +2295,17 @@ export default function App() {
         status: node.status,
         rewardAmount: node.rewardAmount,
         slashAmount: node.slashAmount,
+        rewardSource: node.rewardSource,
+        protocolFault: node.protocolFault,
+        semanticFault: node.semanticFault,
       })),
     });
     addLog(`Final scores computed for ${roomFinalInputs.length} room nodes. Review bounty, slashing, and node rewards updated.`);
-  }, [addLog, roomReviewBounty]);
+  }, [
+    addLog,
+    isContractDrivenReview,
+    roomReviewBounty,
+  ]);
 
   useEffect(() => {
     if (!isContractDrivenReview || !activeAgentStatusRequestId) return;

@@ -25,7 +25,7 @@ interface NodeDetailDrawerProps {
 const statusLabels = {
   within_range: 'Within Range',
   outlier: 'Outlier',
-  rewarded: 'Bounty Won',
+  rewarded: 'Rewarded',
   slashed: 'Slashed',
 };
 
@@ -67,7 +67,8 @@ export default function NodeDetailDrawer({
 
   if (!open || !node) return null;
 
-  const tokenFlow = node.rewardAmount - node.slashAmount;
+  const usesChainAccounting = node.rewardSource === 'chain';
+  const tokenFlow = usesChainAccounting ? -node.slashAmount : node.rewardAmount - node.slashAmount;
   const finalHistory = node.roundHistory.find((item) => item.round === 'final') ?? node.roundHistory.at(-1);
   const reviewerAssets = ASSET_PATHS.characters.reviewers[node.id];
   const profileImage = reviewerAssets?.idle ?? node.avatar ?? reviewerAssets?.portrait;
@@ -302,6 +303,9 @@ function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluati
   const reputationDelta = node.reputationAfter - node.reputationBefore;
   const reputationDeltaLabel = reputationDelta > 0 ? `+${reputationDelta}` : `${reputationDelta}`;
   const reviewNode = node.reviewNode;
+  const usesChainAccounting = node.rewardSource === 'chain';
+  const stakeAsset = usesChainAccounting ? 'USDAIO' : 'TOK';
+  const displayedReward = usesChainAccounting ? node.rewardAmount : node.bountyRewardAmount;
 
   return (
     <>
@@ -313,15 +317,21 @@ function NodeSummaryCard({ node, tokenFlow, agentReasons }: { node: NodeEvaluati
           <Info label="Status" value={node.status.replace('_', ' ')} />
           <Info label="Final Score" value={`${node.finalScore}/100`} />
           <Info label="Reputation Change" value={reputationDeltaLabel} tone={reputationDelta > 0 ? 'positive' : reputationDelta < 0 ? 'negative' : undefined} />
-          <Info label="Stake" value={`${node.stakeAmount.toFixed(1)} TOK`} />
-          <Info label="Bounty" value={`${node.bountyRewardAmount.toFixed(2)} USDT`} />
+          <Info label="Stake" value={`${node.stakeAmount.toFixed(1)} ${stakeAsset}`} />
+          <Info label={usesChainAccounting ? 'Reward Paid' : 'Bounty'} value={`${displayedReward.toFixed(2)} USDAIO`} />
+          {usesChainAccounting && <Info label="Slash Count" value={node.slashCount ?? 0} tone={node.slashAmount > 0 ? 'negative' : undefined} />}
         </div>
         <div className="node-report-ledger-line">
-          <span>Stake Flow</span>
+          <span>{usesChainAccounting ? 'Slash Flow' : 'Stake Flow'}</span>
           <div>
-            <TokenFlowBadge amount={tokenFlow} />
+            <TokenFlowBadge amount={tokenFlow} asset={stakeAsset} />
           </div>
         </div>
+        {usesChainAccounting && (node.protocolFault || node.semanticFault) && (
+          <p className="node-report-narrative node-report-narrative--plain mt-3">
+            Contract flags: {node.protocolFault ? 'protocolFault ' : ''}{node.semanticFault ? 'semanticFault' : ''}. Rewards are zeroed for protocol faults, and slashes are recorded by the contract policy.
+          </p>
+        )}
       </section>
 
       {reviewNode && (

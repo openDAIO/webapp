@@ -190,6 +190,8 @@ export interface DaioRequestLifecycle {
   statusName: string;
   feePaid: bigint;
   priorityFee: bigint;
+  rewardPool: bigint;
+  protocolFee: bigint;
   retryCount: bigint;
   committeeEpoch: bigint;
   auditEpoch: bigint;
@@ -525,6 +527,8 @@ export function useDaioData(): DaioData {
         statusName: latestRequestStatusName,
         feePaid: tupleField<bigint>(requestInfo, 6, 'feePaid', 0n),
         priorityFee: tupleField<bigint>(requestInfo, 7, 'priorityFee', 0n),
+        rewardPool: tupleField<bigint>(requestInfo, 8, 'rewardPool', 0n),
+        protocolFee: tupleField<bigint>(requestInfo, 9, 'protocolFee', 0n),
         retryCount: requestAttempt,
         committeeEpoch: tupleField<bigint>(requestInfo, 15, 'committeeEpoch', 0n),
         auditEpoch: tupleField<bigint>(requestInfo, 16, 'auditEpoch', 0n),
@@ -913,6 +917,8 @@ export function useDaioData(): DaioData {
           requestLifecycle.status,
           requestLifecycle.feePaid,
           requestLifecycle.priorityFee,
+          requestLifecycle.rewardPool,
+          requestLifecycle.protocolFee,
           requestLifecycle.retryCount,
           requestLifecycle.committeeEpoch,
           requestLifecycle.auditEpoch,
@@ -952,6 +958,8 @@ export function useDaioData(): DaioData {
             statusName: requestLifecycle.statusName,
             feePaid: requestLifecycle.feePaid.toString(),
             priorityFee: requestLifecycle.priorityFee.toString(),
+            rewardPool: requestLifecycle.rewardPool.toString(),
+            protocolFee: requestLifecycle.protocolFee.toString(),
             retryCount: requestLifecycle.retryCount.toString(),
             committeeEpoch: requestLifecycle.committeeEpoch.toString(),
             auditEpoch: requestLifecycle.auditEpoch.toString(),
@@ -1040,6 +1048,8 @@ export function useDaioData(): DaioData {
         snapshot.finalAccounting.reward,
         snapshot.finalAccounting.slashed,
         snapshot.finalAccounting.slashCount,
+        snapshot.finalAccounting.protocolFault,
+        snapshot.finalAccounting.semanticFault,
       ].map(String).join(':')).join('|'),
     ].map(String).join('|');
 
@@ -1100,6 +1110,8 @@ export function useDaioData(): DaioData {
           reward: snapshot.finalAccounting.reward.toString(),
           slashed: snapshot.finalAccounting.slashed.toString(),
           slashCount: snapshot.finalAccounting.slashCount.toString(),
+          protocolFault: snapshot.finalAccounting.protocolFault,
+          semanticFault: snapshot.finalAccounting.semanticFault,
         },
         profile: snapshot.profile
           ? {

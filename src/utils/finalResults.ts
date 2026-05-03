@@ -75,6 +75,7 @@ export function calculateFinalSummary(
     reviewBountyAmount,
     bountyPerEligibleNode: eligibleNodeCount > 0 ? reviewBountyAmount / eligibleNodeCount : 0,
     bountyAsset: 'USDAIO',
+    rewardSource: 'frontend',
     completedAt,
   };
 }
@@ -122,6 +123,7 @@ export function calculateSlashingAndRedistribution(
         slashAmount,
         rewardAmount,
         bountyRewardAmount,
+        rewardSource: 'frontend',
         status,
         finalReasoning:
           node.roundHistory?.find((entry) => entry.round === 'final')?.reasoning ??

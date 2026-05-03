@@ -19,7 +19,7 @@ interface NodeResultsTableProps {
 const statusLabels: Record<NodeEvaluationStatus, string> = {
   within_range: 'Within Range',
   outlier: 'Outlier',
-  rewarded: 'Bounty Won',
+  rewarded: 'Rewarded',
   slashed: 'Slashed',
 };
 
@@ -92,6 +92,8 @@ export default function NodeResultsTable({
 }: NodeResultsTableProps) {
   const isScoreboard = variant === 'scoreboard';
   const hasProtocolData = nodes.some((node) => Boolean(node.reviewNode));
+  const usesChainAccounting = nodes.some((node) => node.rewardSource === 'chain');
+  const stakeAsset = usesChainAccounting ? 'USDAIO' : 'TOK';
 
   const content = (
     <>
@@ -100,7 +102,9 @@ export default function NodeResultsTable({
           <div className="min-w-0">
             <h2 className={`text-xl font-bold leading-none ${isScoreboard ? 'text-[#d9f7ff]' : 'text-[#503521]'}`}>Node Results</h2>
             <p className={`mt-2 text-sm leading-tight ${isScoreboard ? 'text-[#9eb6c3]' : 'text-[#6b563f]'}`}>
-              Winners receive bounty only. Slashed nodes lose staked TOK.
+              {usesChainAccounting
+                ? 'Rewards and slashes are read from contract final accounting in USDAIO.'
+                : 'Winners receive bounty only. Slashed nodes lose staked TOK.'}
             </p>
           </div>
           {headerAction}
@@ -122,7 +126,7 @@ export default function NodeResultsTable({
                 <th className={`${hasProtocolData ? 'w-[8%]' : 'w-[11%]'} px-1 py-1 lg:px-2`}>Score</th>
                 {hasProtocolData && <th className="w-[23%] px-1 py-1 lg:px-2">Protocol</th>}
                 <th className={`${hasProtocolData ? 'w-[10%]' : 'w-[15%]'} px-1 py-1 lg:px-2`}>Reputation</th>
-                <th className={`${hasProtocolData ? 'w-[14%]' : 'w-[17%]'} px-1 py-1 lg:px-2`}>Bounty</th>
+                <th className={`${hasProtocolData ? 'w-[14%]' : 'w-[17%]'} px-1 py-1 lg:px-2`}>Reward</th>
                 <th className={`${hasProtocolData ? 'w-[14%]' : 'w-[15%]'} px-1 py-1 lg:px-2`}>Stake</th>
                 <th className={`${hasProtocolData ? 'w-[7%]' : 'w-[8%]'} px-1 py-1 lg:px-2`}>Inspect</th>
               </tr>
@@ -132,6 +136,7 @@ export default function NodeResultsTable({
                 const stakeFlow = -node.slashAmount;
                 const isSelected = selectedNodeId === node.id;
                 const reputationChange = node.reputationAfter - node.reputationBefore;
+                const displayedReward = usesChainAccounting ? node.rewardAmount : node.bountyRewardAmount;
                 const reputationTone = reputationChange > 0 ? 'text-[#9effc2]' : reputationChange < 0 ? 'text-[#ffb3aa]' : 'text-[#d9f7ff]';
                 const stakeTone = stakeFlow < 0 ? 'text-[#ffb3aa]' : 'text-[#9effc2]';
                 const cellClass = isScoreboard
@@ -181,15 +186,15 @@ export default function NodeResultsTable({
                       )}
                     </td>
                     <td className={`break-words font-bold leading-tight ${isScoreboard ? 'text-[#ffd98a]' : 'text-[#2f6f35]'} ${cellClass}`}>
-                      {node.bountyRewardAmount > 0 ? `${node.bountyRewardAmount.toFixed(2)} USDT` : '--'}
+                      {displayedReward > 0 ? `${displayedReward.toFixed(2)} USDAIO` : '--'}
                     </td>
                     <td className={`${cellClass} whitespace-nowrap`}>
                       {isScoreboard ? (
                         <span className={`whitespace-nowrap font-mono text-sm font-bold ${stakeTone}`}>
-                          {stakeFlow < 0 ? stakeFlow.toFixed(1) : '0'} TOK
+                          {stakeFlow < 0 ? stakeFlow.toFixed(1) : '0'} {stakeAsset}
                         </span>
                       ) : (
-                        <TokenFlowBadge amount={stakeFlow} />
+                        <TokenFlowBadge amount={stakeFlow} asset={stakeAsset} />
                       )}
                     </td>
                     <td className={`border-r-2 ${isScoreboard ? 'border-[#718696]' : 'border-[#d7b98f]'} ${cellClass}`}>
