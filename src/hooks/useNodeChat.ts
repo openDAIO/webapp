@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState } from 'react';
-import { NodeChatState, NodeEvaluationResult } from '../types';
+import { NodeChatState, NodeEvaluationResult, NodeChatMessage } from '../types';
 import {
   createSystemChatMessage,
   createUserChatMessage,
   postNodeChatMessage,
 } from '../services/nodeChatService';
+import { askAgentQuestion } from '../services/daio/contentApi';
 
 const DEFAULT_CHAT_STATE: NodeChatState = {
   maxQuestions: 3,
@@ -16,7 +17,16 @@ function chatKey(evaluationId: string, nodeId: string) {
   return `${evaluationId}:${nodeId}`;
 }
 
-export function useNodeChat(evaluationId: string) {
+function createNodeChatMessage(content: string): NodeChatMessage {
+  return {
+    id: `msg_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    role: 'node',
+    content,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function useNodeChat(evaluationId: string, requestId?: string | null) {
   const [chatStates, setChatStates] = useState<Record<string, NodeChatState>>({});
   const [sendingByKey, setSendingByKey] = useState<Record<string, boolean>>({});
   const [errorByKey, setErrorByKey] = useState<Record<string, string | null>>({});
@@ -55,13 +65,27 @@ export function useNodeChat(evaluationId: string) {
       }));
 
       try {
-        const response = await postNodeChatMessage(
-          evaluationId,
-          node,
-          trimmed,
-          current.questionsUsed,
-          current.maxQuestions,
-        );
+        const agentAddress = node.reviewNode?.agentAddress;
+        const useChainAsk = Boolean(requestId && agentAddress);
+
+        let nextQuestionsUsed: number;
+        let nodeMessage: NodeChatMessage;
+
+        if (useChainAsk) {
+          const answer = await askAgentQuestion(requestId!, agentAddress!, trimmed);
+          nextQuestionsUsed = current.questionsUsed + 1;
+          nodeMessage = createNodeChatMessage(answer);
+        } else {
+          const response = await postNodeChatMessage(
+            evaluationId,
+            node,
+            trimmed,
+            current.questionsUsed,
+            current.maxQuestions,
+          );
+          nextQuestionsUsed = response.questionsUsed;
+          nodeMessage = response.message;
+        }
 
         setChatStates((prev) => {
           const latest = prev[key] ?? current;
@@ -69,8 +93,8 @@ export function useNodeChat(evaluationId: string) {
             ...prev,
             [key]: {
               ...latest,
-              questionsUsed: response.questionsUsed,
-              messages: [...latest.messages, response.message],
+              questionsUsed: nextQuestionsUsed,
+              messages: [...latest.messages, nodeMessage],
             },
           };
         });
@@ -94,7 +118,7 @@ export function useNodeChat(evaluationId: string) {
         setSendingByKey((prev) => ({ ...prev, [key]: false }));
       }
     },
-    [chatStates, evaluationId],
+    [chatStates, evaluationId, requestId],
   );
 
   const helpers = useMemo(

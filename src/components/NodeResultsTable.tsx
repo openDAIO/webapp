@@ -38,7 +38,7 @@ const scoreboardStatusClass: Record<NodeEvaluationStatus, string> = {
 };
 
 function formatProtocolValue(value?: number) {
-  return typeof value === 'number' ? value.toLocaleString() : '--';
+  return typeof value === 'number' ? (value / 100).toFixed(2) : '--';
 }
 
 function ProtocolCell({

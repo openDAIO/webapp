@@ -32,7 +32,7 @@ export default function ReputationScorePanel({ characters, selectedIds = [], dim
       <div className="space-y-3">
         {sorted.map((char) => {
           const inactive = shouldPartition && !selectedIdSet.has(char.id);
-          const reputationLabel = char.reputationScore > 0 ? `${char.reputationScore.toFixed(1)}%` : '--';
+          const reputationLabel = char.reputationScore > 0 ? char.reputationScore.toFixed(1) : '--';
 
           return (
           <div

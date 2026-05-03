@@ -474,6 +474,60 @@ export async function getAgentReasons(requestId: string, agent: string): Promise
   }
 }
 
+// ─── Content API — agent ask (interview) ──────────────────────────────────
+
+/**
+ * POST /requests/:requestId/agents/:agent/ask — interview a reviewer agent.
+ * Assumed request body: { question: string }
+ * Assumed response shape: { answer: string }
+ * (Adjust `body`/return mapping below if the deployed endpoint diverges.)
+ */
+export async function askAgentQuestion(
+  requestId: string,
+  agent: string,
+  question: string,
+): Promise<string> {
+  const url = `${DAIO_API}/requests/${requestId}/agents/${encodeURIComponent(agent)}/ask`;
+  const startedAt = performance.now();
+  logApi('POST /requests/:requestId/agents/:agent/ask:start', {
+    url,
+    requestId,
+    agent,
+    questionLength: question.length,
+  });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    logApi('POST /requests/:requestId/agents/:agent/ask:error', {
+      requestId,
+      agent,
+      status: res.status,
+      statusText: res.statusText,
+      body: text.slice(0, 500),
+      durationMs: requestDurationMs(startedAt),
+    });
+    throw new Error(`ask failed: ${res.status} ${res.statusText}`);
+  }
+
+  const data = (await res.json()) as { answer?: string; message?: string; reply?: string };
+  const answer = data.answer ?? data.message ?? data.reply ?? '';
+  logApi('POST /requests/:requestId/agents/:agent/ask:ok', {
+    requestId,
+    agent,
+    answerLength: answer.length,
+    durationMs: requestDurationMs(startedAt),
+  });
+
+  if (!answer) throw new Error('ask returned an empty answer');
+  return answer;
+}
+
 // ─── Content API — health check ───────────────────────────────────────────
 
 export async function checkHealth(): Promise<boolean> {

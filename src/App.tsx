@@ -1113,7 +1113,6 @@ export default function App() {
   const [isNodeSelectionReady, setIsNodeSelectionReady] = useState(false);
   const [visibleChainAuditCount, setVisibleChainAuditCount] = useState(0);
   const [reviewRoundState, setReviewRoundState] = useState<ReviewRoundState | null>(null);
-  const nodeChat = useNodeChat(evaluationId);
   const daioDataRef = useRef(daioData);
   const charactersRef = useRef(characters);
   const reviewRoundStateRef = useRef<ReviewRoundState | null>(reviewRoundState);
@@ -1186,6 +1185,7 @@ export default function App() {
     roomReviewBounty?.requestId ??
     (hasActiveOnChainRequest ? daioData.latestRequestId.toString() : null);
   const isContractDrivenReview = Boolean(activeAgentStatusRequestId);
+  const nodeChat = useNodeChat(evaluationId, activeAgentStatusRequestId);
   const chainAuditQuorum = auditReportQuorumFromDaio(daioData);
   const chainAuditReportTargetCount = Math.min(
     chainAuditQuorum,
@@ -3166,7 +3166,7 @@ export default function App() {
                       <ReputationScorePanel
                         characters={sideboardCharacters}
                         selectedIds={activeReviewRoundState?.selectedReviewerIds}
-                        dimInactive={Boolean(activeReviewRoundState)}
+                        dimInactive={Boolean(activeReviewRoundState) && (phase !== 'SELECTION' || isNodeSelectionReady)}
                       />
                     )}
                     <div className="min-h-0 flex-1">
